@@ -4,8 +4,9 @@ Pillow>=10.0.0
 numpy>=1.24.0
 
 # --- ML / CLIP ---
+--extra-index-url https://download.pytorch.org/whl/cpu
 transformers>=4.35.0
-torch==2.11.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.11.0+cpu
 
 # --- API Server ---
 fastapi>=0.104.0
