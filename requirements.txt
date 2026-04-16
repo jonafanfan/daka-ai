@@ -1,0 +1,13 @@
+# --- Computer Vision ---
+opencv-contrib-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# --- ML / CLIP ---
+transformers>=4.35.0
+torch>=2.0.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- API Server ---
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
