@@ -1,9 +1,6 @@
 import base64
 import json
 import threading
-from dotenv import load_dotenv
-
-load_dotenv()
 import cv2
 import numpy as np
 from PIL import Image
