@@ -3,14 +3,8 @@ opencv-contrib-python-headless>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
 
-# --- ML / CLIP ---
---extra-index-url https://download.pytorch.org/whl/cpu
-transformers>=4.35.0
-torch==2.11.0+cpu
-
 # --- API Server ---
 fastapi>=0.104.0
 uvicorn>=0.24.0
 python-multipart>=0.0.6
 openai>=1.0.0
-
