@@ -1,26 +1,43 @@
+import base64
+import json
 import threading
+from dotenv import load_dotenv
+
+load_dotenv()
 import cv2
 import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
+from openai import OpenAI
 
 _clip_model = None
 _clip_processor = None
 _clip_lock = threading.Lock()
+_openai_client = None
+
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI()
+    return _openai_client
 
 SCENE_LABELS = [
-    ("Coffee Shop",            "a photo taken inside a coffee shop"),
-    ("Restaurant",             "a photo taken inside a restaurant"),
-    ("Bar or Nightclub",       "a photo taken inside a bar or nightclub"),
+    ("Café or Restaurant",     "a photo taken inside a cafe or restaurant"),
+    ("Bar or Nightclub",       "a photo taken inside a bar or nightclub at night"),
+    ("Night Market",           "a photo taken at an outdoor night market with food stalls and lights"),
     ("Shopping Mall",          "a photo taken inside a shopping mall"),
-    ("Street",                 "a photo of a city street"),
-    ("Park or Garden",         "a photo of a park or garden"),
-    ("Beach",                  "a photo of a beach"),
-    ("Temple or Historic Site","a photo of a temple or historic site"),
-    ("Hotel Lobby",            "a photo taken inside a hotel lobby"),
-    ("Gym or Sports Venue",    "a photo taken inside a gym or sports venue"),
-    ("Rooftop or Balcony",     "a photo taken from a rooftop or balcony"),
+    ("Convenience Store",      "a photo taken inside a convenience store"),
     ("Museum or Gallery",      "a photo taken inside a museum or art gallery"),
+    ("Hotel Lobby",            "a photo taken inside a hotel lobby"),
+    ("Office or Workspace",    "a photo taken inside an office or co-working space"),
+    ("Street",                 "a photo of a city street during the day"),
+    ("Rooftop or Balcony",     "a photo taken from a rooftop or balcony overlooking a city"),
+    ("Park or Garden",         "a photo of a park or garden with greenery"),
+    ("Beach",                  "a photo of a sandy beach near the ocean"),
+    ("Mountain or Hiking Trail","a photo on a mountain trail or hiking path in nature"),
+    ("Temple or Historic Site","a photo of a temple, pagoda, or historic monument"),
+    ("Gym or Sports Venue",    "a photo taken inside a gym or sports facility"),
+    ("Airport or Train Station","a photo taken inside an airport terminal or train station"),
 ]
 
 def _load_clip():
@@ -226,12 +243,15 @@ def assess_composition(features: dict) -> dict:
 
 
 SCENE_CATEGORIES = {
-    "indoor_dining":  ["Coffee Shop", "Restaurant", "Bar or Nightclub"],
-    "indoor_public":  ["Shopping Mall", "Hotel Lobby", "Museum or Gallery"],
+    "indoor_dining":  ["Café or Restaurant"],
+    "night_out":      ["Bar or Nightclub", "Night Market"],
+    "indoor_public":  ["Shopping Mall", "Convenience Store", "Museum or Gallery", "Hotel Lobby"],
+    "work":           ["Office or Workspace"],
     "outdoor_urban":  ["Street", "Rooftop or Balcony"],
-    "outdoor_nature": ["Park or Garden", "Beach"],
+    "outdoor_nature": ["Park or Garden", "Beach", "Mountain or Hiking Trail"],
     "cultural":       ["Temple or Historic Site"],
     "active":         ["Gym or Sports Venue"],
+    "transit":        ["Airport or Train Station"],
 }
 
 def _get_category(label: str) -> str:
@@ -246,10 +266,20 @@ CATEGORY_POSE_TIPS = {
         "Hold a drink with both hands, smile looking down",
         "Face away from camera, look into the distance",
     ],
+    "night_out": [
+        "Lean on the bar or stall counter, look over shoulder",
+        "Hold food or drink up, smile candid",
+        "Stand in the crowd, face half-turned towards the light",
+    ],
     "indoor_public": [
         "Stand centred, arms relaxed, chin slightly up",
         "Lean against the wall with one shoulder",
         "Walk towards the camera with a natural stride",
+    ],
+    "work": [
+        "Sit at desk, look up from work naturally",
+        "Stand by a window with laptop or phone in hand",
+        "Lean on a glass wall or partition, arms loosely crossed",
     ],
     "outdoor_urban": [
         "Look over your shoulder into the light",
@@ -271,6 +301,11 @@ CATEGORY_POSE_TIPS = {
         "Action shot: mid-exercise with good form visible",
         "Lean on equipment casually, look off-camera",
     ],
+    "transit": [
+        "Walk with luggage, look ahead confidently",
+        "Sit with bag on lap, look out the window",
+        "Stand under the departures board, look up",
+    ],
 }
 
 DEFAULT_POSE_TIPS = [
@@ -278,22 +313,62 @@ DEFAULT_POSE_TIPS = [
     "Keep your posture relaxed and natural",
 ]
 
+def generate_pose_tips(image_path: str, category: str) -> list[str]:
+    try:
+        ext = image_path.rsplit(".", 1)[-1].lower()
+        mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}.get(ext, "image/jpeg")
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        response = _get_openai_client().chat.completions.create(
+            model="gpt-5.4-nano",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    {"type": "text", "text": (
+                        "You are a photography coach helping someone take a 打卡 photo. "
+                        "Analyse this scene and give 3 specific pose tips based on what "
+                        "you can see — the lighting direction, available space, background "
+                        "elements, and any notable features like windows, walls, or furniture. "
+                        "Be specific to this exact scene, not generic. "
+                        "Return exactly a JSON array of 3 short strings, no other text."
+                    )}
+                ]
+            }],
+            max_tokens=300,
+        )
+
+        tips = json.loads(response.choices[0].message.content.strip())
+        if isinstance(tips, list) and len(tips) >= 3:
+            return [str(t) for t in tips[:3]]
+    except Exception:
+        pass
+
+    return CATEGORY_POSE_TIPS.get(category, DEFAULT_POSE_TIPS)
+
 CATEGORY_HASHTAGS = {
     "indoor_dining":  ["#cafe", "#foodie", "#citywalk"],
+    "night_out":      ["#nightout", "#nightmarket", "#vibes"],
     "indoor_public":  ["#shopping", "#architecture", "#citywalk"],
+    "work":           ["#worklife", "#office", "#hustle"],
     "outdoor_urban":  ["#streetphoto", "#cityvibes", "#citywalk"],
     "outdoor_nature": ["#nature", "#outdoors", "#explore"],
     "cultural":       ["#heritage", "#architecture", "#travel"],
     "active":         ["#fitness", "#active", "#gym"],
+    "transit":        ["#travel", "#onthemove", "#departure"],
 }
 
 CATEGORY_FILTERS = {
     "indoor_dining":  "Warm film",
+    "night_out":      "Warm vintage",
     "indoor_public":  "Cool minimal",
+    "work":           "Cool minimal",
     "outdoor_urban":  "Desaturated urban",
     "outdoor_nature": "Soft natural",
     "cultural":       "Warm vintage",
     "active":         "High contrast",
+    "transit":        "Desaturated urban",
 }
 
 def analyze_scene(image_path: str) -> dict:
@@ -308,7 +383,7 @@ def analyze_scene(image_path: str) -> dict:
         "blueprint": build_blueprint(features),
         "lighting": assess_lighting(features),
         "composition": assess_composition(features),
-        "pose_tips": CATEGORY_POSE_TIPS.get(category, DEFAULT_POSE_TIPS),
+        "pose_tips": generate_pose_tips(image_path, category),
         "hashtags": CATEGORY_HASHTAGS.get(category, ["#citywalk"]),
-        "filter": CATEGORY_FILTERS.get(category, "Natural"),
+        "filter": CATEGORY_FILTERS.get(category, "Soft natural"),
     }
