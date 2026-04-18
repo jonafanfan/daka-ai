@@ -1,16 +1,10 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uuid, os, tempfile
-from scene_analysis import analyze_scene, _load_clip
+from scene_analysis import analyze_scene, InappropriateImageError
 
-@asynccontextmanager
-async def lifespan(_):
-    _load_clip()  # warm up CLIP before the first request
-    yield
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,6 +27,8 @@ async def analyze(file: UploadFile = File(...)):
     try:
         result = analyze_scene(tmp_path)
         return result
+    except InappropriateImageError:
+        return JSONResponse(status_code=400, content={"error": "Image not suitable for analysis"})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e), "type": type(e).__name__})
     finally:
