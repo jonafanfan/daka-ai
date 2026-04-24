@@ -42,7 +42,6 @@ def _analyze_with_gpt(b64: str) -> dict:
         messages=[{
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 {"type": "text", "text": (
                     "You are analysing a photo for a 打卡 (check-in) photography app used in China.\n"
                     "Return a JSON object with exactly these fields:\n"
@@ -53,10 +52,11 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "- \"pose_tips\": array of exactly 3 specific pose tips based on what you can see — "
                     "lighting direction, available space, background, furniture, windows, etc. "
                     "Be specific to this exact scene, not generic."
-                )}
+                )},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             ]
         }],
-        max_tokens=400,
+        max_tokens=500,
     )
     return json.loads(response.choices[0].message.content)
 
