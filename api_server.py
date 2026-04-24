@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import uuid, os, tempfile
+import uuid, os, tempfile, traceback
 from scene_analysis import analyze_scene, InappropriateImageError
 
 app = FastAPI()
@@ -30,6 +30,7 @@ async def analyze(file: UploadFile = File(...)):
     except InappropriateImageError:
         return JSONResponse(status_code=400, content={"error": "Image not suitable for analysis"})
     except Exception as e:
+        traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e), "type": type(e).__name__})
     finally:
         if os.path.exists(tmp_path):
