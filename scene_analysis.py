@@ -59,7 +59,7 @@ def _analyze_with_gpt(b64: str) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             ]
         }],
-        max_tokens=500,
+        max_completion_tokens=500,
     )
     return json.loads(response.choices[0].message.content)
 
