@@ -27,12 +27,15 @@ def _encode_image(image_path: str) -> str:
 VALID_FILTERS = ["Warm film", "Cool minimal", "Desaturated urban", "Soft natural", "Warm vintage", "High contrast"]
 
 def _moderate_image(b64: str) -> bool:
-    """Returns True if the image is safe, False if flagged."""
-    response = _get_openai_client().moderations.create(
-        model="omni-moderation-latest",
-        input=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}],
-    )
-    return not response.results[0].flagged
+    """Returns True if the image is safe, False if flagged. Defaults to safe on API error."""
+    try:
+        response = _get_openai_client().moderations.create(
+            model="omni-moderation-latest",
+            input=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}],
+        )
+        return not response.results[0].flagged
+    except Exception:
+        return True
 
 
 def _analyze_with_gpt(b64: str) -> dict:
