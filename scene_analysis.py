@@ -37,7 +37,7 @@ def _moderate_image(b64: str) -> bool:
 
 def _analyze_with_gpt(b64: str) -> dict:
     response = _get_openai_client().chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.4-nano",
         response_format={"type": "json_object"},
         messages=[{
             "role": "user",
@@ -49,7 +49,7 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "- \"scene_type\": concise scene name (e.g. \"Café\", \"City Street\", \"Beach\", \"Temple\")\n"
                     "- \"filter\": pick the best from exactly: "
                     "\"Warm film\", \"Cool minimal\", \"Desaturated urban\", \"Soft natural\", \"Warm vintage\", \"High contrast\"\n"
-                    "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol\n"
+                    "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase\n"
                     "- \"pose_tips\": array of exactly 3 specific pose tips based on what you can see — "
                     "lighting direction, available space, background, furniture, windows, etc. "
                     "Be specific to this exact scene, not generic."
