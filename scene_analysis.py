@@ -47,7 +47,7 @@ def _analyze_with_gpt(b64: str) -> dict:
             "content": [
                 {"type": "text", "text": (
                     "You are analysing a photo for a 打卡 (check-in) photography app used in China.\n"
-                    "Return a JSON object with exactly these fields:\n"
+                    "Return a JSON object with exactly these fields IN ENGLISH:\n"
                     "- \"scene_type\": concise scene name (e.g. \"Café\", \"City Street\", \"Beach\", \"Temple\")\n"
                     "- \"filter\": pick the best from exactly: "
                     "\"Warm film\", \"Cool minimal\", \"Desaturated urban\", \"Soft natural\", \"Warm vintage\", \"High contrast\"\n"
