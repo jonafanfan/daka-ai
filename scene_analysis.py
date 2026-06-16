@@ -24,7 +24,7 @@ def _encode_image(image_path: str) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-VALID_FILTERS = ["Warm film", "Cool minimal", "Desaturated urban", "Soft natural", "Warm vintage", "High contrast"]
+VALID_FILTERS = ["Vivid", "Vivid Warm", "Vivid Cool", "Dramatic", "Dramatic Warm", "Dramatic Cool", "Silvertone", "Noir"]
 
 def _moderate_image(b64: str) -> bool:
     """Returns True if the image is safe, False if flagged. Defaults to safe on API error."""
@@ -50,7 +50,10 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "Return a JSON object with exactly these fields IN ENGLISH:\n"
                     "- \"scene_type\": concise scene name (e.g. \"Café\", \"City Street\", \"Beach\", \"Temple\")\n"
                     "- \"filter\": pick the best from exactly: "
-                    "\"Warm film\", \"Cool minimal\", \"Desaturated urban\", \"Soft natural\", \"Warm vintage\", \"High contrast\"\n"
+                    "\"Vivid\", \"Vivid Warm\", \"Vivid Cool\", \"Dramatic\", \"Dramatic Warm\", \"Dramatic Cool\", \"Silvertone\", \"Noir\". "
+                    "Use the Warm variants for cosy/golden-hour scenes, Cool for clean/urban/overcast scenes, "
+                    "Dramatic for moody or high-contrast scenes, and the black & white options (Silvertone soft, Noir high-contrast) "
+                    "only when colour adds little.\n"
                     "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase\n"
                     "- \"pose_tips\": array of exactly 3 specific pose tips based on what you can see — "
                     "lighting direction, available space, background, furniture, windows, etc. "
@@ -187,9 +190,9 @@ def analyze_scene(image_path: str) -> dict:
     features = extract_features(image_path)
     gpt = _analyze_with_gpt(b64)
 
-    filter_name = gpt.get("filter", "Soft natural")
+    filter_name = gpt.get("filter", "Vivid")
     if filter_name not in VALID_FILTERS:
-        filter_name = "Soft natural"
+        filter_name = "Vivid"
 
     return {
         "scene_type":   gpt.get("scene_type", "Unknown"),
