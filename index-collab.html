@@ -147,31 +147,20 @@
     .take-photo:active { transform: scale(0.97); }
     .rescan { display: block; text-align: center; color: rgba(255,255,255,0.6); font-size: 13px; padding: 4px; }
 
-    /* ─── Level / inclinometer ─── */
-    .level-overlay {
-      position: absolute; left: 50%; bottom: 170px; transform: translateX(-50%);
-      display: flex; align-items: center; gap: 12px;
-      pointer-events: none; z-index: 20; opacity: 0; transition: opacity 0.4s;
+    #camLevel {
+      position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px; z-index: 25;
+      pointer-events: none;
     }
-    .level-overlay.show { opacity: 0.6; }
-    .level-bar {
-      width: 180px; height: 3px;
-      background: rgba(255,255,255,0.25); border-radius: 2px; position: relative;
+    #camLevelTrack { width: 200px; height: 2px; background: rgba(255,255,255,0.25); border-radius: 1px; position: relative; }
+    #camLevelDot {
+      position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+      border-radius: 50%; background: #fff; transform: translate(-50%,-50%);
+      transition: left .06s; box-shadow: 0 0 6px rgba(0,0,0,.4);
     }
-    .level-bubble {
-      position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%;
-      background: rgba(255,255,255,0.85); left: 50%;
-      transform: translate(-50%, -50%);
-      transition: left 0.08s ease-out, background 0.3s, box-shadow 0.3s;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-    }
-    .level-bubble.level { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,0.6); }
-    .level-angle {
-      font-size: 12px; font-family: 'SF Mono', 'Courier New', monospace;
-      color: rgba(255,255,255,0.7); min-width: 32px; text-align: center;
-      font-variant-numeric: tabular-nums;
-    }
-    .level-angle.level { color: #66bb6a; }
+    #camLevelDot.on { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,.7); }
+    #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
+    #camLevelVal.on { color: #66bb6a; }
 
     /* ─── Results ─── */
     #results { background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
@@ -234,14 +223,6 @@
   <section id="camera" class="screen">
     <video id="video" autoplay playsinline muted></video>
 
-    <!-- Level / inclinometer -->
-    <div class="level-overlay" id="levelOverlay">
-      <div class="level-bar">
-        <div class="level-bubble" id="levelBubble"></div>
-      </div>
-      <span class="level-angle" id="levelAngle">0°</span>
-    </div>
-
     <div class="grid-overlay" id="gridOverlay">
       <div class="grid-line grid-h1"></div><div class="grid-line grid-h2"></div>
       <div class="grid-line grid-v1"></div><div class="grid-line grid-v2"></div>
@@ -269,6 +250,11 @@
     <div class="loading" id="camLoading">
       <div class="spinner"></div>
       <div class="loading-text">Analysing scene…</div>
+    </div>
+
+    <div id="camLevel">
+      <div id="camLevelTrack"><div id="camLevelDot"></div></div>
+      <span id="camLevelVal">0°</span>
     </div>
   </section>
 
@@ -314,11 +300,6 @@
     let filterActive = false;
     let hasCamera = false;
 
-    /* ── Level state ── */
-    let levelSupported = false;
-    let levelActive = false;
-    let levelFallbackTimer = null;
-
     const $ = (id) => document.getElementById(id);
     function show(id) {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -333,65 +314,6 @@
     function scaledSize(w, h, cap) { const m = Math.max(w, h); if (m <= cap) return [w, h]; const r = cap / m; return [Math.round(w*r), Math.round(h*r)]; }
     function errMsg(e) { return e.name === 'AbortError' ? 'Server took too long — it may be waking up. Try again.' : (e.message || 'Analysis failed'); }
 
-    /* ── Level / inclinometer ── */
-    function initLevel() {
-      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        levelSupported = true; // iOS 13+ — must request permission later
-      } else if (window.DeviceOrientationEvent) {
-        levelSupported = true;
-        window.addEventListener('deviceorientation', onDeviceOrientation);
-        levelFallbackTimer = setTimeout(() => {
-          if (!levelActive && $('levelOverlay')) $('levelOverlay').classList.remove('show');
-        }, 3000);
-      }
-    }
-
-    function startLevel() {
-      if (levelActive) return;
-      window.addEventListener('deviceorientation', onDeviceOrientation);
-      levelActive = true;
-      clearTimeout(levelFallbackTimer);
-    }
-
-    function stopLevel() {
-      window.removeEventListener('deviceorientation', onDeviceOrientation);
-      levelActive = false;
-    }
-
-    function onDeviceOrientation(e) {
-      const g = e.gamma;
-      if (g == null) return;
-
-      const bubble = document.getElementById('levelBubble');
-      const angle = document.getElementById('levelAngle');
-      if (!bubble || !angle) return;
-
-      if (!levelActive) {
-        levelActive = true;
-        clearTimeout(levelFallbackTimer);
-        if ($('levelOverlay') && $('camIdle').style.display !== 'none') $('levelOverlay').classList.add('show');
-      }
-
-      const maxDeg = 15;
-      const pos = Math.max(0, Math.min(100, ((g / maxDeg) + 1) * 50));
-      const isLevel = Math.abs(g) < 1;
-
-      bubble.style.left = pos + '%';
-      bubble.classList.toggle('level', isLevel);
-      angle.classList.toggle('level', isLevel);
-
-      const display = Math.abs(g) < 0.5 ? '0' : (g > 0 ? '+' : '') + Math.round(g);
-      angle.textContent = display + '°';
-    }
-
-    function requestLevelPermission() {
-      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission().then(state => {
-          if (state === 'granted') startLevel();
-        }).catch(() => {});
-      }
-    }
-
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
       $('camIdle').style.display     = s === 'idle' ? 'flex' : 'none';
@@ -401,7 +323,7 @@
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
-      $('levelOverlay').classList.toggle('show', s === 'idle' && levelActive);
+      $('camLevel').style.display    = s === 'idle' ? 'flex' : 'none';
     }
 
     async function startCamera() {
@@ -411,7 +333,6 @@
         hasCamera = true;
         setCamState('idle');
         show('camera');
-        if (levelSupported && !levelActive) requestLevelPermission();
       } catch (e) {
         hasCamera = false;
         toast('Camera unavailable — pick a photo instead');
@@ -609,16 +530,40 @@
     });
 
     /* ── Wire up ── */
-    initLevel();
 
     $('startBtn').addEventListener('click', startCamera);
     $('shutter').addEventListener('click', scanScene);
     $('takePhotoBtn').addEventListener('click', takePhoto);
-    $('rescanBtn').addEventListener('click', () => { setCamState('idle'); if (levelSupported) requestLevelPermission(); });
+    $('rescanBtn').addEventListener('click', () => setCamState('idle'));
     $('filterBtn').addEventListener('click', () => { filterActive = !filterActive; updateFilterUI(); });
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); } else { show('home'); } });
+
+    /* ── Level ── */
+    if (window.DeviceOrientationEvent) {
+      function onLevel(e) {
+        const g = e.gamma;
+        if (g == null) return;
+        const d = $('camLevelDot'), v = $('camLevelVal');
+        if (!d || !v) return;
+        const p = Math.max(0, Math.min(100, ((g / 15) + 1) * 50));
+        const l = Math.abs(g) < 1;
+        d.style.left = p + '%';
+        d.classList.toggle('on', l);
+        v.classList.toggle('on', l);
+        v.textContent = (Math.abs(g) < 0.5 ? '0' : (g > 0 ? '+' : '') + Math.round(g)) + '°';
+      }
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        $('startBtn').addEventListener('click', function iosPerm() {
+          DeviceOrientationEvent.requestPermission().then(r => {
+            if (r === 'granted') window.addEventListener('deviceorientation', onLevel);
+          }).catch(() => {});
+        });
+      } else {
+        window.addEventListener('deviceorientation', onLevel);
+      }
+    }
   </script>
 </body>
 </html>
