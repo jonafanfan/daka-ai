@@ -156,7 +156,7 @@
     #camLevelDot {
       position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
       border-radius: 50%; background: #fff; transform: translate(-50%,-50%);
-      transition: left .06s; box-shadow: 0 0 6px rgba(0,0,0,.4);
+      box-shadow: 0 0 6px rgba(0,0,0,.4);
     }
     #camLevelDot.on { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,.7); }
     #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
@@ -323,7 +323,7 @@
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
-      $('camLevel').style.display    = s === 'idle' ? 'flex' : 'none';
+      $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
     }
 
     async function startCamera() {
@@ -547,12 +547,12 @@
         if (g == null) return;
         const d = $('camLevelDot'), v = $('camLevelVal');
         if (!d || !v) return;
-        const p = Math.max(0, Math.min(100, ((g / 15) + 1) * 50));
+        const p = Math.max(0, Math.min(100, ((g / 30) + 1) * 50));
         const l = Math.abs(g) < 1;
         d.style.left = p + '%';
         d.classList.toggle('on', l);
         v.classList.toggle('on', l);
-        v.textContent = (Math.abs(g) < 0.5 ? '0' : (g > 0 ? '+' : '') + Math.round(g)) + '°';
+        v.textContent = Math.round(Math.abs(g)) + '°';
       }
       if (typeof DeviceOrientationEvent.requestPermission === 'function') {
         $('startBtn').addEventListener('click', function iosPerm() {
