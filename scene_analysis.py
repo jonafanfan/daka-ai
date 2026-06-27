@@ -26,6 +26,20 @@ def _encode_image(image_path: str) -> str:
 
 VALID_FILTERS = ["Vivid", "Vivid Warm", "Vivid Cool", "Dramatic", "Dramatic Warm", "Dramatic Cool", "Silvertone", "Noir"]
 
+# --- AI Engine output contract (see CONTRACT.md) ---
+CONTRACT_VERSION = "1.0"
+PLACEMENT_DEADBAND = 0.04     # normalised; |offset| below this reads as "ok"
+OBJECT_CONF_FLOOR = 0.0       # TODO(team): objects[] confidence floor — pending sign-off (CONTRACT.md §7)
+MAX_OBJECTS = 8
+
+# Rule-of-thirds intersections as (name, x, y), normalised, top-left origin.
+# Order MUST match the `intersections` list in extract_features (TL, TR, BL, BR).
+_THIRDS = [
+    ("top-left", 1 / 3, 1 / 3), ("top-right", 2 / 3, 1 / 3),
+    ("bottom-left", 1 / 3, 2 / 3), ("bottom-right", 2 / 3, 2 / 3),
+]
+
+
 def _moderate_image(b64: str) -> bool:
     """Returns True if the image is safe, False if flagged. Defaults to safe on API error."""
     try:
@@ -57,12 +71,21 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase\n"
                     "- \"pose_tips\": array of exactly 3 specific pose tips based on what you can see — "
                     "lighting direction, available space, background, furniture, windows, etc. "
-                    "Be specific to this exact scene, not generic."
+                    "Be specific to this exact scene, not generic.\n"
+                    "- \"objects\": array of UP TO 8 notable things you can see, each "
+                    "{\"label\": short name, \"box\": {\"x\":num,\"y\":num,\"w\":num,\"h\":num}, \"confidence\": num 0..1}. "
+                    "ALL coordinates are NORMALISED 0..1 with the ORIGIN at the TOP-LEFT of the frame; "
+                    "box x,y = top-left corner, w,h = width,height as fractions of the frame.\n"
+                    "- \"subject_placement\": where a PERSON should STAND for the best shot here. "
+                    "The person is NOT in the frame yet — judge from the empty scene, its light and its space. "
+                    "{\"point\": {\"x\":num,\"y\":num} normalised top-left origin = where the person should stand, "
+                    "\"size\": suggested person height as a fraction of frame height, "
+                    "\"anchor\": \"feet\" or \"center\", \"reason\": one short sentence why}."
                 )},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             ]
         }],
-        max_completion_tokens=500,
+        max_completion_tokens=700,
     )
     return json.loads(response.choices[0].message.content)
 
@@ -115,6 +138,34 @@ def extract_features(image_path: str) -> dict:
         if critical:
             alignment = max(0.0, 1.0 - (float(np.mean(critical)) / 15.0))
 
+    # --- Subject-location signals (normalised, top-left origin) — surfaced for the framing output ---
+    sal = np.asarray(saliency_map, dtype=np.float64)
+    sal_total = float(sal.sum())
+    if sal_total > 1e-9:
+        xs = np.arange(w, dtype=np.float64).reshape(1, -1)
+        ys = np.arange(h, dtype=np.float64).reshape(-1, 1)
+        cx = float((sal * xs).sum() / sal_total) / max(w, 1)
+        cy = float((sal * ys).sum() / sal_total) / max(h, 1)
+    else:
+        cx, cy = 0.5, 0.5
+    saliency_centroid = {"x": min(1.0, max(0.0, cx)), "y": min(1.0, max(0.0, cy))}
+
+    best_idx = int(np.argmax(thirds_scores)) if thirds_scores else 0
+    third_name, third_x, third_y = _THIRDS[best_idx]
+    strongest_third = {"intersection": third_name, "x": third_x, "y": third_y}
+
+    # Signed tilt of the scene's horizon (positive = slopes down toward the right, image space).
+    horizon_tilt = 0.0
+    if lines is not None:
+        near_horizontal = []
+        for l in lines:
+            ang = float(np.degrees(np.arctan2(l[0][3] - l[0][1], l[0][2] - l[0][0])))
+            ang = (ang + 90) % 180 - 90          # fold to (-90, 90]
+            if abs(ang) < 20:                     # near-horizontal lines only
+                near_horizontal.append(ang)
+        if near_horizontal:
+            horizon_tilt = float(np.median(near_horizontal))
+
     return {
         "brightness": brightness,
         "color_ratio": color_ratio,
@@ -124,6 +175,11 @@ def extract_features(image_path: str) -> dict:
         "balance": float(balance),
         "width": int(w),
         "height": int(h),
+        # --- new: subject-location signals (T1) ---
+        "saliency_centroid": saliency_centroid,
+        "thirds_scores": [float(s) for s in thirds_scores],
+        "strongest_third": strongest_third,
+        "horizon_tilt_deg": round(horizon_tilt, 1),
     }
 
 
@@ -183,6 +239,111 @@ class InappropriateImageError(ValueError):
     pass
 
 
+def _clamp01(value, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _validate_objects(raw) -> list:
+    """Coerce GPT 'objects' into clean, clamped, capped entries. Never raises."""
+    if not isinstance(raw, list):
+        return []
+    cleaned = []
+    for o in raw:
+        if not isinstance(o, dict):
+            continue
+        box = o.get("box")
+        if not isinstance(box, dict):
+            continue
+        try:
+            conf = max(0.0, min(1.0, float(o.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf < OBJECT_CONF_FLOOR:
+            continue
+        cleaned.append({
+            "label": str(o.get("label", "object"))[:40],
+            "box": {
+                "x": _clamp01(box.get("x")), "y": _clamp01(box.get("y")),
+                "w": _clamp01(box.get("w")), "h": _clamp01(box.get("h")),
+            },
+            "confidence": round(conf, 2),
+        })
+    cleaned.sort(key=lambda c: c["confidence"], reverse=True)
+    return cleaned[:MAX_OBJECTS]
+
+
+def _build_framing(gpt: dict, features: dict) -> dict:
+    """Assemble the authoritative `framing` object (CONTRACT.md §3.2). Never raises.
+
+    On an empty-scene scan there is no live person, so `target` (where to stand) is the
+    load-bearing output: GPT's subject_placement first, falling back to the strongest
+    saliency rule-of-thirds intersection so a usable point is ALWAYS present. The saliency
+    centroid is used as the reference the guidance arrow points *from*; true per-frame
+    person tracking is Capture's optional client-side layer (CONTRACT.md §6).
+    """
+    sp = gpt.get("subject_placement")
+    sp = sp if isinstance(sp, dict) else {}
+
+    # target: where the subject should stand (GPT first, saliency rule-of-thirds fallback)
+    fallback = features.get("strongest_third") or {"intersection": "center", "x": 0.5, "y": 0.5}
+    point = sp.get("point") if isinstance(sp.get("point"), dict) else None
+    if point is not None and (point.get("x") is not None or point.get("y") is not None):
+        target = {
+            "intersection": fallback["intersection"],
+            "x": _clamp01(point.get("x"), fallback["x"]),
+            "y": _clamp01(point.get("y"), fallback["y"]),
+        }
+    else:
+        target = {
+            "intersection": fallback["intersection"],
+            "x": float(fallback["x"]), "y": float(fallback["y"]),
+        }
+
+    # subject reference (no live person on an empty scene -> detected:false, saliency centroid)
+    centroid = features.get("saliency_centroid") or {"x": 0.5, "y": 0.5}
+    size = sp.get("size")
+    subject = {
+        "detected": False,
+        "source": "saliency",
+        "label": "salient_region",
+        "confidence": 0.0,
+        "center": {"x": _clamp01(centroid.get("x"), 0.5), "y": _clamp01(centroid.get("y"), 0.5)},
+        "bbox": None,
+        "size": _clamp01(size) if size is not None else None,
+    }
+
+    # guidance: nudge from the reference toward the target (deadband -> "ok")
+    dx = target["x"] - subject["center"]["x"]
+    dy = target["y"] - subject["center"]["y"]
+    guidance = {
+        "move_subject_x": "right" if dx > PLACEMENT_DEADBAND else "left" if dx < -PLACEMENT_DEADBAND else "ok",
+        "move_subject_y": "down" if dy > PLACEMENT_DEADBAND else "up" if dy < -PLACEMENT_DEADBAND else "ok",
+        "distance": "ok",                        # needs a live subject size; filled by Capture's live layer
+        "dx": round(dx, 3), "dy": round(dy, 3),
+        "strength": round(min(1.0, (dx * dx + dy * dy) ** 0.5), 3),
+    }
+
+    # level: static scene tilt (live device roll stays frontend-owned)
+    alignment = float(features.get("alignment", 1.0))
+    level = {
+        "scene_horizon_tilt_deg": float(features.get("horizon_tilt_deg", 0.0)),
+        "needs_straightening": alignment < 0.7,
+        "source_alignment": round(alignment, 3),
+    }
+
+    reason = sp.get("reason")
+    return {
+        "subject": subject,
+        "target": target,
+        "guidance": guidance,
+        "level": level,
+        "reason": str(reason)[:160] if reason else "",
+    }
+
+
 def analyze_scene(image_path: str) -> dict:
     b64 = _encode_image(image_path)
     if not _moderate_image(b64):
@@ -195,6 +356,8 @@ def analyze_scene(image_path: str) -> dict:
         filter_name = "Vivid"
 
     return {
+        "contract_version": CONTRACT_VERSION,
+        "coord_space":  "normalized_topleft",
         "scene_type":   gpt.get("scene_type", "Unknown"),
         "blueprint":    build_blueprint(features),
         "lighting":     assess_lighting(features),
@@ -202,4 +365,6 @@ def analyze_scene(image_path: str) -> dict:
         "pose_tips":    gpt.get("pose_tips", []),
         "hashtags":     gpt.get("hashtags", []),
         "filter":       filter_name,
+        "objects":      _validate_objects(gpt.get("objects")),
+        "framing":      _build_framing(gpt, features),
     }
