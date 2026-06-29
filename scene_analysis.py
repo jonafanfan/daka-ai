@@ -32,7 +32,7 @@ PLACEMENT_DEADBAND = 0.04     # normalised; |offset| below this reads as "ok"
 OBJECT_CONF_FLOOR = 0.0       # TODO(team): objects[] confidence floor — pending sign-off (CONTRACT.md §7)
 MAX_OBJECTS = 8
 
-# Rule-of-thirds intersections as (name, x, y), normalised, top-left origin.
+# Rule-of-thirds intersections as (name, x, y), normalised, top-left origin..
 # Order MUST match the `intersections` list in extract_features (TL, TR, BL, BR).
 _THIRDS = [
     ("top-left", 1 / 3, 1 / 3), ("top-right", 2 / 3, 1 / 3),
