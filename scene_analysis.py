@@ -107,7 +107,10 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "If target is \"camera\", anchor MUST be one of "
                     "[tilt_up,tilt_down,pan_left,pan_right,step_back,step_closer,raise_camera,lower_camera,level_horizon]. "
                     "About PLACEMENT/FRAMING (use lines, doorways, windows, empty space); never body language.\n"
-                    "- \"camera_tilt\": whether the camera should be tilted up or down to frame the scene best. "
+                    "- \"camera_tilt\": whether the camera should be tilted up or down for the best composition. "
+                    "Pick \"up\" when interesting detail (ceiling, sky, upper architecture) sits above centre "
+                    "and should be included. Pick \"down\" when the foreground detail (table, floor, leading lines) "
+                    "should anchor the frame. \"ok\" when the scene is balanced as-is. "
                     "{\"direction\": \"up\" or \"down\" or \"ok\", "
                     "\"degrees\": integer 0-30 estimating how many degrees to tilt, "
                     "\"reason\": one short sentence why}.\n"
@@ -432,7 +435,24 @@ def _build_framing(gpt: dict, features: dict) -> dict:
     }
 
     reason = sp.get("reason")
-    camera_tilt = _validate_camera_tilt(gpt.get("camera_tilt"))
+
+    # camera_tilt: derived from subject_placement, using GPT's reason if available.
+    # If the subject should stand in the upper third of the frame (low y) the camera
+    # tilts down to achieve that framing; if in the lower third (high y) tilt up.
+    camera_tilt = {"direction": "ok", "degrees": 0, "reason": ""}
+    point = sp.get("point") if isinstance(sp.get("point"), dict) else None
+    if point is not None and point.get("y") is not None:
+        py = _clamp01(point.get("y"), 0.5)
+        if py < 0.35:
+            tilt_deg = min(30, round((0.35 - py) * 50))
+            camera_tilt = {"direction": "down", "degrees": tilt_deg, "reason": ""}
+        elif py > 0.65:
+            tilt_deg = min(30, round((py - 0.65) * 50))
+            camera_tilt = {"direction": "up", "degrees": tilt_deg, "reason": ""}
+    gpt_ct = gpt.get("camera_tilt")
+    if isinstance(gpt_ct, dict) and isinstance(gpt_ct.get("reason"), str) and gpt_ct["reason"].strip():
+        camera_tilt["reason"] = gpt_ct["reason"].strip()[:120]
+
     return {
         "subject": subject,
         "target": target,
