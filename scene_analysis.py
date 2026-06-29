@@ -431,20 +431,8 @@ def _build_framing(gpt: dict, features: dict) -> dict:
 
     reason = sp.get("reason")
 
-    # camera_tilt: derived from subject_placement, using GPT's reason if available.
-    # If the subject should stand in the upper third of the frame (low y) the camera
-    # tilts down to achieve that framing; if in the lower third (high y) tilt up.
-    camera_tilt = {"direction": "ok", "reason": ""}
-    point = sp.get("point") if isinstance(sp.get("point"), dict) else None
-    if point is not None and point.get("y") is not None:
-        py = _clamp01(point.get("y"), 0.5)
-        if py < 0.35:
-            camera_tilt = {"direction": "down", "reason": ""}
-        elif py > 0.65:
-            camera_tilt = {"direction": "up", "reason": ""}
-    gpt_ct = gpt.get("camera_tilt")
-    if isinstance(gpt_ct, dict) and isinstance(gpt_ct.get("reason"), str) and gpt_ct["reason"].strip():
-        camera_tilt["reason"] = gpt_ct["reason"].strip()[:120]
+    # camera_tilt: GPT judges based on scene content (ceiling, sky vs floor, foreground).
+    camera_tilt = _validate_camera_tilt(gpt.get("camera_tilt"))
 
     return {
         "subject": subject,
