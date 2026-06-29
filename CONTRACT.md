@@ -131,7 +131,7 @@ The engine **bakes the math** so the frontend stays dumb — you read enums, you
 | `confidence` | number | `0..1` — gate jittery arrows on this if you like |
 | `center` | `{x,y}` | subject centroid |
 | `bbox` | `{x,y,w,h}` \| null | optional; null when saliency-only |
-| `size` | number | suggested subject height as a fraction of frame height |
+| `size` | number \| null | suggested subject height as a fraction of frame height; `null` when the model omits it (common on empty-scene scans) |
 
 **`framing.target`** — where the subject *should* go (nearest strong rule-of-thirds point).
 | Field | Type | Notes |
@@ -166,14 +166,14 @@ The engine **bakes the math** so the frontend stays dumb — you read enums, you
 **`framing.reason`** — one short human string explaining the placement (good for a tip line).
 
 ### 3.3 `framing_suggestions[]` — semantic placement directives *(generate branch)*
-Exactly **3** ordered (most-impactful-first) directives. Distinct from `pose_tips`
+**Up to 3** ordered (most-impactful-first) directives (may be fewer, or `[]`). Distinct from `pose_tips`
 (body language) — these are about *placement* of subject/camera.
 
 | Field | Type | Notes |
 |---|---|---|
 | `target` | enum | `"subject"` or `"camera"` |
 | `instruction` | string | imperative, ≤ ~12 words; safe to show on screen verbatim |
-| `anchor` | enum (closed set) | maps 1:1 to a UI affordance — see below |
+| `anchor` | enum (closed set) \| null | maps 1:1 to a UI affordance — see below; `null` if mismatched/unknown |
 
 **Closed `anchor` set** (switch on these; fall back to showing `instruction` text if unknown):
 ```
@@ -181,6 +181,11 @@ left_third  right_third  center  upper_third  lower_third          ← subject g
 tilt_up  tilt_down  pan_left  pan_right                            ← camera rotation
 step_back  step_closer  raise_camera  lower_camera  level_horizon  ← camera position / level
 ```
+
+> **`anchor` is coupled to `target`:** when `target` is `"subject"` the anchor is one of the grid
+> cells (row 1); when `target` is `"camera"` it is one of the rotation/position tags (rows 2–3).
+> The engine emits `anchor: null` if the model returns a mismatched or unknown anchor — render the
+> `instruction` text only in that case.
 
 ### 3.4 `scene_yap` — shareable one-liner *(Share branch)*
 One fun, on-brand sentence (≤ ~90 chars) for the quick-share caption, next to the
