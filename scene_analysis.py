@@ -112,7 +112,6 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "and should be included. Pick \"down\" when the foreground detail (table, floor, leading lines) "
                     "should anchor the frame. \"ok\" when the scene is balanced as-is. "
                     "{\"direction\": \"up\" or \"down\" or \"ok\", "
-                    "\"degrees\": integer 0-30 estimating how many degrees to tilt, "
                     "\"reason\": one short sentence why}.\n"
                     "- \"scene_yap\": ONE fun, shareable sentence (max ~90 chars) in a hyped app voice about the "
                     "vibe of this scene. Flavour, not advice. English, but you MAY include the word 打卡. "
@@ -120,7 +119,7 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "Match these nested key names EXACTLY (confidence is a decimal 0..1, NOT a percentage): "
                     "{\"objects\":[{\"label\":\"window\",\"box\":{\"x\":0.05,\"y\":0.10,\"w\":0.30,\"h\":0.55},\"confidence\":0.88}],"
                     "\"subject_placement\":{\"point\":{\"x\":0.33,\"y\":0.62},\"size\":0.7,\"anchor\":\"feet\",\"reason\":\"...\"},"
-                    "\"camera_tilt\":{\"direction\":\"up\",\"degrees\":5,\"reason\":\"Tilt up to capture the ceiling\"},"
+                    "\"camera_tilt\":{\"direction\":\"up\",\"reason\":\"Tilt up to capture the ceiling\"},"
                     "\"framing_suggestions\":[{\"target\":\"subject\",\"instruction\":\"Stand in the lower-left third\",\"anchor\":\"left_third\"}]}"
                 )},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
@@ -362,18 +361,14 @@ def _validate_framing_suggestions(raw) -> list:
 
 
 def _validate_camera_tilt(raw) -> dict:
-    """Coerce GPT 'camera_tilt' into the closed enum set + safe degrees. Never raises."""
+    """Coerce GPT 'camera_tilt' into the closed enum set. Never raises."""
     if not isinstance(raw, dict):
-        return {"direction": "ok", "degrees": 0, "reason": ""}
+        return {"direction": "ok", "reason": ""}
     direction = raw.get("direction", "ok")
     if direction not in ("up", "down", "ok"):
         direction = "ok"
-    try:
-        degrees = max(0, min(30, int(float(raw.get("degrees", 0)))))
-    except (TypeError, ValueError):
-        degrees = 0
     reason = str(raw.get("reason", ""))[:120] if raw.get("reason") else ""
-    return {"direction": direction, "degrees": degrees, "reason": reason}
+    return {"direction": direction, "reason": reason}
 
 
 def _build_framing(gpt: dict, features: dict) -> dict:
@@ -439,16 +434,14 @@ def _build_framing(gpt: dict, features: dict) -> dict:
     # camera_tilt: derived from subject_placement, using GPT's reason if available.
     # If the subject should stand in the upper third of the frame (low y) the camera
     # tilts down to achieve that framing; if in the lower third (high y) tilt up.
-    camera_tilt = {"direction": "ok", "degrees": 0, "reason": ""}
+    camera_tilt = {"direction": "ok", "reason": ""}
     point = sp.get("point") if isinstance(sp.get("point"), dict) else None
     if point is not None and point.get("y") is not None:
         py = _clamp01(point.get("y"), 0.5)
         if py < 0.35:
-            tilt_deg = min(30, round((0.35 - py) * 50))
-            camera_tilt = {"direction": "down", "degrees": tilt_deg, "reason": ""}
+            camera_tilt = {"direction": "down", "reason": ""}
         elif py > 0.65:
-            tilt_deg = min(30, round((py - 0.65) * 50))
-            camera_tilt = {"direction": "up", "degrees": tilt_deg, "reason": ""}
+            camera_tilt = {"direction": "up", "reason": ""}
     gpt_ct = gpt.get("camera_tilt")
     if isinstance(gpt_ct, dict) and isinstance(gpt_ct.get("reason"), str) and gpt_ct["reason"].strip():
         camera_tilt["reason"] = gpt_ct["reason"].strip()[:120]

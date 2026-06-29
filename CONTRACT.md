@@ -90,7 +90,6 @@ Existing fields (already shipped) are abbreviated; **new fields are shown in ful
     },
     "camera_tilt": {
       "direction": "up",               // "up" | "down" | "ok" — which way to tilt the camera
-      "degrees":   5,                  // 0-30, estimated degrees of tilt needed
       "reason":    "Tilt up to capture the ceiling and hanging plants"
     },
     "reason": "Stand at the left third by the window so soft light hits your face"
@@ -172,7 +171,6 @@ The engine **bakes the math** so the frontend stays dumb — you read enums, you
 | Field | Type | Notes |
 |---|---|---|
 | `direction` | enum | `"up"` \| `"down"` \| `"ok"` — which way to tilt (or no tilt needed) |
-| `degrees` | number | `0-30`, estimated degrees of tilt suggested |
 | `reason` | string | short sentence explaining why (`≤ 120` chars; may be `""`) |
 
 **`framing.reason`** — one short human string explaining the placement (good for a tip line).

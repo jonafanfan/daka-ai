@@ -409,8 +409,7 @@
       const el = $('camTilt'), arrow = $('camTiltArrow'), label = $('camTiltLabel');
       if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
       arrow.className = ct.direction === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
-      const deg = ct.degrees || '';
-      label.textContent = deg ? 'Tilt ' + ct.direction + ' ' + deg + '°' : 'Tilt ' + ct.direction;
+      label.textContent = 'Tilt ' + ct.direction;
       el.classList.add('show');
     }
 
