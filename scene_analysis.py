@@ -123,7 +123,7 @@ def _analyze_with_gpt(b64: str) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             ]
         }],
-        max_completion_tokens=1500,
+        max_completion_tokens=1800,
     )
     # gpt-5.x nano is a reasoning model: max_completion_tokens covers reasoning + visible
     # output, so a length cutoff (or a refusal) can yield partial or empty content. Degrade to

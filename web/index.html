@@ -342,7 +342,7 @@
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
-      $('camTilt').classList.toggle('show', tips);
+      if (!tips) $('camTilt').classList.remove('show');
     }
 
     async function startCamera() {
