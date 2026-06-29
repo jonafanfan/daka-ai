@@ -435,7 +435,7 @@
       if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
       const dir = ct.direction === 'up' ? 'down' : 'up';
       arrow.className = dir === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
-      label.textContent = 'skibidi';
+      label.textContent = 'Tilt ' + dir;
       el.classList.add('show');
     }
 
