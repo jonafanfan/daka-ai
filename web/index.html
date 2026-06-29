@@ -204,6 +204,13 @@
     .toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 14px; z-index: 100; opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 80%; text-align: center; }
     .toast.show { opacity: 1; }
     #fileInput { display: none; }
+
+    /* ── T9: live engine output (target marker + detected objects; scene_yap & framing on results) ── */
+    #aiOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 24; display: none; }
+    #aiOverlay.on { display: block; }
+    .yap { font-size: 15px; line-height: 1.5; color: var(--text); }
+    .fsugg { font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 4px; }
+    .fsugg-tag { color: var(--text2); font-size: 11px; }
   </style>
 </head>
 <body>
@@ -240,6 +247,8 @@
       <div class="grid-line grid-h1"></div><div class="grid-line grid-h2"></div>
       <div class="grid-line grid-v1"></div><div class="grid-line grid-v2"></div>
     </div>
+
+    <canvas id="aiOverlay"></canvas>
 
     <div class="scene-badge-top" id="sceneBadgeTop"></div>
     <div class="grid-prompt" id="gridPrompt"><span>Position your subject at a grid intersection</span></div>
@@ -342,6 +351,7 @@
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
+      $('aiOverlay').classList.toggle('on', tips);
       if (!tips) $('camTilt').classList.remove('show');
     }
 
@@ -427,7 +437,38 @@
       $('poseSwiper').innerHTML = tips.map((t, i) =>
         '<div class="pose-item"><span class="pose-num">' + (i + 1) + '</span><span class="pose-text">' + esc(t) + '</span></div>').join('');
       $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
+      drawAIOverlay(r);
       renderCameraTilt(r.framing && r.framing.camera_tilt);
+    }
+
+    /* ── T9: draw the engine's target marker + detected objects over the live video ── */
+    function drawAIOverlay(r) {
+      const v = $('video'), cv = $('aiOverlay');
+      if (!v || !cv || !v.videoWidth) return;
+      const W = v.clientWidth, H = v.clientHeight;
+      cv.width = W; cv.height = H;
+      const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, W, H);
+      // map normalised [0,1] top-left coords through the video's object-fit: cover transform
+      const scale = Math.max(W / v.videoWidth, H / v.videoHeight);
+      const dw = v.videoWidth * scale, dh = v.videoHeight * scale;
+      const ox = (W - dw) / 2, oy = (H - dh) / 2;
+      const PX = nx => ox + nx * dw, PY = ny => oy + ny * dh;
+      const f = r.framing;
+
+      (r.objects || []).forEach(o => {
+        const b = o && o.box; if (!b) return;
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+        ctx.strokeRect(PX(b.x), PY(b.y), b.w * dw, b.h * dh);
+      });
+
+      if (f && f.target) {
+        const tx = PX(f.target.x), ty = PY(f.target.y);
+        ctx.beginPath(); ctx.arc(tx, ty, 16, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(197,122,82,0.30)'; ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = '#C57A52'; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = '600 12px Georgia, serif'; ctx.textAlign = 'center';
+        ctx.fillText('stand here', tx, ty - 24); ctx.textAlign = 'left';
+      }
     }
 
     /* ── Stage 2: take the keeper photo → results ── */
@@ -445,9 +486,18 @@
       updateFilterUI();
       $('sceneBadge').textContent = r.scene_type || 'Scene';
       const pills = (r.hashtags || []).map(h => '<div class="pill" data-tag="' + esc(h) + '">' + esc(h) + '</div>').join('');
-      $('cards').innerHTML = pills
+      const yapCard = r.scene_yap
+        ? '<div class="card"><div class="card-title">Vibe</div><div class="yap">' + esc(r.scene_yap) + '</div></div>'
+        : '';
+      const fsugg = r.framing_suggestions || [];
+      const framingCard = fsugg.length
+        ? '<div class="card"><div class="card-title">Framing</div>' + fsugg.map(s =>
+            '<div class="fsugg">• ' + esc(s.instruction) + (s.anchor ? ' <span class="fsugg-tag">[' + esc(s.anchor) + ']</span>' : '') + '</div>').join('') + '</div>'
+        : '';
+      const hashCard = pills
         ? '<div class="card"><div class="card-title">Hashtags <span class="ch">tap to copy</span></div><div class="pills">' + pills + '</div><div class="copy-all" id="copyAll">Copy all</div></div>'
         : '';
+      $('cards').innerHTML = yapCard + framingCard + hashCard;
       $('cards').querySelectorAll('.pill').forEach(p => p.addEventListener('click', () => copyText(p.dataset.tag, 'Copied!')));
       const ca = $('copyAll');
       if (ca) ca.addEventListener('click', () => copyText((r.hashtags || []).join(' '), 'All copied!'));
