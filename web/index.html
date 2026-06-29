@@ -162,20 +162,7 @@
     #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
     #camLevelVal.on { color: #66bb6a; }
 
-    .tilt-badge {
-      position: absolute; top: calc(110px + env(safe-area-inset-top)); left: 50%;
-      transform: translateX(-50%); z-index: 25; pointer-events: none;
-      background: rgba(0,0,0,0.45); color: #fff; padding: 4px 14px;
-      border-radius: 100px; font-size: 13px; font-weight: 500;
-      display: none; align-items: center; gap: 6px;
-      backdrop-filter: blur(4px); white-space: nowrap;
-    }
-    .tilt-badge.show { display: flex; }
-    .tilt-arrow-up::before  { content: "⬆  "; }
-    .tilt-arrow-down::before { content: "⬇  "; }
-    #camTiltLabel { font-size: 12px; color: rgba(255,255,255,0.85); }
-
-    /* ─── Results ─── */
+/* ─── Results ─── */
     #results { background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .results-inner { min-height: 100%; display: flex; flex-direction: column; }
     .photo-wrap { position: relative; width: 100%; aspect-ratio: 3 / 4; background: #000; flex-shrink: 0; }
@@ -211,6 +198,19 @@
     .yap { font-size: 15px; line-height: 1.5; color: var(--text); }
     .fsugg { font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 4px; }
     .fsugg-tag { color: var(--text2); font-size: 11px; }
+
+    .tilt-badge {
+      position: absolute; top: calc(110px + env(safe-area-inset-top)); left: 50%;
+      transform: translateX(-50%); z-index: 25; pointer-events: none;
+      background: rgba(0,0,0,0.45); color: #fff; padding: 4px 14px;
+      border-radius: 100px; font-size: 13px; font-weight: 500;
+      display: none; align-items: center; gap: 6px;
+      backdrop-filter: blur(4px); white-space: nowrap;
+    }
+    .tilt-badge.show { display: flex; }
+    .tilt-arrow-up::before  { content: "⬆  "; }
+    .tilt-arrow-down::before { content: "⬇  "; }
+    #camTiltLabel { font-size: 12px; color: rgba(255,255,255,0.85); }
   </style>
 </head>
 <body>
@@ -284,7 +284,6 @@
       <span id="camTiltLabel"></span>
     </div>
   </section>
-
   <!-- ── Results ── -->
   <section id="results" class="screen">
     <div class="results-inner">
@@ -326,7 +325,6 @@
     let currentFilter = 'Vivid';
     let filterActive = false;
     let hasCamera = false;
-
     const $ = (id) => document.getElementById(id);
     function show(id) {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -352,7 +350,6 @@
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
       $('aiOverlay').classList.toggle('on', tips);
-      if (!tips) $('camTilt').classList.remove('show');
     }
 
     async function startCamera() {
@@ -415,14 +412,6 @@
       }
     }
 
-    function renderCameraTilt(ct) {
-      const el = $('camTilt'), arrow = $('camTiltArrow'), label = $('camTiltLabel');
-      if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
-      arrow.className = ct.direction === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
-      label.textContent = 'Tilt ' + ct.direction;
-      el.classList.add('show');
-    }
-
     function renderTips(r) {
       $('sceneBadgeTop').textContent = r.scene_type || 'Scene';
       const q = r.lighting.quality;
@@ -439,6 +428,15 @@
       $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
       drawAIOverlay(r);
       renderCameraTilt(r.framing && r.framing.camera_tilt);
+    }
+
+    function renderCameraTilt(ct) {
+      const el = $('camTilt'), arrow = $('camTiltArrow'), label = $('camTiltLabel');
+      if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
+      const dir = ct.direction === 'up' ? 'down' : 'up';
+      arrow.className = dir === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
+      label.textContent = 'Tilt ' + dir;
+      el.classList.add('show');
     }
 
     /* ── T9: draw the engine's target marker + detected objects over the live video ── */

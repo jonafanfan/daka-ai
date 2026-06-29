@@ -89,8 +89,8 @@ Existing fields (already shipped) are abbreviated; **new fields are shown in ful
       "source_alignment":       0.71   // raw features.alignment, passed through
     },
     "camera_tilt": {
-      "direction": "up",               // "up" | "down" | "ok" — which way to tilt the camera
-      "reason":    "Tilt up to capture the ceiling and hanging plants"
+      "direction": "down",             // "up" | "down" | "ok"
+      "reason":    "Tilt down — empty floor below adds nothing; the café wall has character"
     },
     "reason": "Stand at the left third by the window so soft light hits your face"
   },
@@ -167,10 +167,10 @@ The engine **bakes the math** so the frontend stays dumb — you read enums, you
 > gamma listener in `index.html`). `framing.level` only describes the analysed *scene*. Don't
 > double-count them in one indicator.
 
-**`framing.camera_tilt`** — whether the camera should be tilted up or down for the best frame.
+**`framing.camera_tilt`** — tilt the camera up or down for a better subject backdrop.
 | Field | Type | Notes |
 |---|---|---|
-| `direction` | enum | `"up"` \| `"down"` \| `"ok"` — which way to tilt (or no tilt needed) |
+| `direction` | enum | `"up"` \| `"down"` \| `"ok"` — tilt toward the better content (up for dead floor, down for dead ceiling) |
 | `reason` | string | short sentence explaining why (`≤ 120` chars; may be `""`) |
 
 **`framing.reason`** — one short human string explaining the placement (good for a tip line).

@@ -107,19 +107,19 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "If target is \"camera\", anchor MUST be one of "
                     "[tilt_up,tilt_down,pan_left,pan_right,step_back,step_closer,raise_camera,lower_camera,level_horizon]. "
                     "About PLACEMENT/FRAMING (use lines, doorways, windows, empty space); never body language.\n"
-                    "- \"camera_tilt\": whether the camera should be tilted up or down for the best composition. "
-                    "Pick \"up\" when interesting detail (ceiling, sky, upper architecture) sits above centre "
-                    "and should be included. Pick \"down\" when the foreground detail (table, floor, leading lines) "
-                    "should anchor the frame. \"ok\" when the scene is balanced as-is. "
+
+                    "- \"camera_tilt\": look at the scene vertically. If the top part is dead space "
+                    "(blank ceiling, flat sky) say \"up\". If the bottom part is dead space (empty "
+                    "floor, bare ground) say \"down\". Otherwise \"ok\". "
                     "{\"direction\": \"up\" or \"down\" or \"ok\", "
-                    "\"reason\": one short sentence why}.\n"
+                    "\"reason\": one short sentence}.\n"
                     "- \"scene_yap\": ONE fun, shareable sentence (max ~90 chars) in a hyped app voice about the "
                     "vibe of this scene. Flavour, not advice. English, but you MAY include the word 打卡. "
                     "No hashtags, at most one emoji.\n"
                     "Match these nested key names EXACTLY (confidence is a decimal 0..1, NOT a percentage): "
                     "{\"objects\":[{\"label\":\"window\",\"box\":{\"x\":0.05,\"y\":0.10,\"w\":0.30,\"h\":0.55},\"confidence\":0.88}],"
                     "\"subject_placement\":{\"point\":{\"x\":0.33,\"y\":0.62},\"size\":0.7,\"anchor\":\"feet\",\"reason\":\"...\"},"
-                    "\"camera_tilt\":{\"direction\":\"up\",\"reason\":\"Tilt up to capture the ceiling\"},"
+                    "\"camera_tilt\":{\"direction\":\"up\",\"reason\":\"Empty ceiling above, tilt up to frame it out\"},"
                     "\"framing_suggestions\":[{\"target\":\"subject\",\"instruction\":\"Stand in the lower-left third\",\"anchor\":\"left_third\"}]}"
                 )},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
@@ -155,6 +155,9 @@ def extract_features(image_path: str) -> dict:
 
     edges = cv2.Canny(gray, 100, 200)
     sharpness = float(np.sum(edges > 0) / (h * w + 1e-6))
+    top_edge  = float(np.sum(edges[:h//3, :] > 0)) / (max(h // 3, 1) * w + 1e-6)
+    mid_edge  = float(np.sum(edges[h//3:2*h//3, :] > 0)) / (max(h // 3, 1) * w + 1e-6)
+    bot_edge  = float(np.sum(edges[2*h//3:, :] > 0)) / (max(h - 2 * h // 3, 1) * w + 1e-6)
 
     saliency_engine = cv2.saliency.StaticSaliencySpectralResidual_create()
     _, saliency_map = saliency_engine.computeSaliency(img)
@@ -231,6 +234,9 @@ def extract_features(image_path: str) -> dict:
         "thirds_scores": [float(s) for s in thirds_scores],
         "strongest_third": strongest_third,
         "horizon_tilt_deg": round(horizon_tilt, 1),
+        "edge_density_top": top_edge,
+        "edge_density_mid": mid_edge,
+        "edge_density_bot": bot_edge,
     }
 
 
@@ -431,8 +437,21 @@ def _build_framing(gpt: dict, features: dict) -> dict:
 
     reason = sp.get("reason")
 
-    # camera_tilt: GPT judges based on scene content (ceiling, sky vs floor, foreground).
-    camera_tilt = _validate_camera_tilt(gpt.get("camera_tilt"))
+    # camera_tilt: derive from edge-density first (OpenCV), use GPT reason as flavour.
+    e_top = features.get("edge_density_top", 0.5)
+    e_mid = features.get("edge_density_mid", 0.5)
+    e_bot = features.get("edge_density_bot", 0.5)
+    THIN_AIR = 0.04
+    RATIO = 4.0
+    if e_mid > THIN_AIR * RATIO and e_top < THIN_AIR and e_mid / max(e_top, 1e-9) > RATIO:
+        camera_tilt = {"direction": "up", "reason": ""}
+    elif e_mid > THIN_AIR * RATIO and e_bot < THIN_AIR and e_mid / max(e_bot, 1e-9) > RATIO:
+        camera_tilt = {"direction": "down", "reason": ""}
+    else:
+        camera_tilt = _validate_camera_tilt(gpt.get("camera_tilt"))
+    gpt_ct = gpt.get("camera_tilt")
+    if isinstance(gpt_ct, dict) and isinstance(gpt_ct.get("reason"), str) and gpt_ct["reason"].strip():
+        camera_tilt["reason"] = gpt_ct["reason"].strip()[:120]
 
     return {
         "subject": subject,
