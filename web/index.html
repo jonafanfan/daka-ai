@@ -162,6 +162,19 @@
     #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
     #camLevelVal.on { color: #66bb6a; }
 
+    .tilt-badge {
+      position: absolute; top: calc(110px + env(safe-area-inset-top)); left: 50%;
+      transform: translateX(-50%); z-index: 25; pointer-events: none;
+      background: rgba(0,0,0,0.45); color: #fff; padding: 4px 14px;
+      border-radius: 100px; font-size: 13px; font-weight: 500;
+      display: none; align-items: center; gap: 6px;
+      backdrop-filter: blur(4px); white-space: nowrap;
+    }
+    .tilt-badge.show { display: flex; }
+    .tilt-arrow-up::before  { content: "⬆  "; }
+    .tilt-arrow-down::before { content: "⬇  "; }
+    #camTiltLabel { font-size: 12px; color: rgba(255,255,255,0.85); }
+
     /* ─── Results ─── */
     #results { background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .results-inner { min-height: 100%; display: flex; flex-direction: column; }
@@ -256,6 +269,11 @@
       <div id="camLevelTrack"><div id="camLevelDot"></div></div>
       <span id="camLevelVal">0°</span>
     </div>
+
+    <div id="camTilt" class="tilt-badge">
+      <span id="camTiltArrow"></span>
+      <span id="camTiltLabel"></span>
+    </div>
   </section>
 
   <!-- ── Results ── -->
@@ -324,6 +342,7 @@
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
+      $('camTilt').classList.toggle('show', tips);
     }
 
     async function startCamera() {
@@ -386,6 +405,15 @@
       }
     }
 
+    function renderCameraTilt(ct) {
+      const el = $('camTilt'), arrow = $('camTiltArrow'), label = $('camTiltLabel');
+      if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
+      arrow.className = ct.direction === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
+      const deg = ct.degrees || '';
+      label.textContent = deg ? 'Tilt ' + ct.direction + ' ' + deg + '°' : 'Tilt ' + ct.direction;
+      el.classList.add('show');
+    }
+
     function renderTips(r) {
       $('sceneBadgeTop').textContent = r.scene_type || 'Scene';
       const q = r.lighting.quality;
@@ -400,6 +428,7 @@
       $('poseSwiper').innerHTML = tips.map((t, i) =>
         '<div class="pose-item"><span class="pose-num">' + (i + 1) + '</span><span class="pose-text">' + esc(t) + '</span></div>').join('');
       $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
+      renderCameraTilt(r.framing && r.framing.camera_tilt);
     }
 
     /* ── Stage 2: take the keeper photo → results ── */

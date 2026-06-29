@@ -88,6 +88,11 @@ Existing fields (already shipped) are abbreviated; **new fields are shown in ful
       "needs_straightening":    true,  // == alignment < 0.7, precomputed
       "source_alignment":       0.71   // raw features.alignment, passed through
     },
+    "camera_tilt": {
+      "direction": "up",               // "up" | "down" | "ok" — which way to tilt the camera
+      "degrees":   5,                  // 0-30, estimated degrees of tilt needed
+      "reason":    "Tilt up to capture the ceiling and hanging plants"
+    },
     "reason": "Stand at the left third by the window so soft light hits your face"
   },
 
@@ -163,6 +168,13 @@ The engine **bakes the math** so the frontend stays dumb — you read enums, you
 > gamma listener in `index.html`). `framing.level` only describes the analysed *scene*. Don't
 > double-count them in one indicator.
 
+**`framing.camera_tilt`** — whether the camera should be tilted up or down for the best frame.
+| Field | Type | Notes |
+|---|---|---|
+| `direction` | enum | `"up"` \| `"down"` \| `"ok"` — which way to tilt (or no tilt needed) |
+| `degrees` | number | `0-30`, estimated degrees of tilt suggested |
+| `reason` | string | short sentence explaining why (`≤ 120` chars; may be `""`) |
+
 **`framing.reason`** — one short human string explaining the placement (good for a tip line).
 
 ### 3.3 `framing_suggestions[]` — semantic placement directives *(generate branch)*
@@ -206,6 +218,7 @@ hashtag pills and the "Shot with 打卡AI" watermark.
 | `pose_tips` | ✅ pose panel | — | ✅ swiper |
 | `objects` | ✅ avoid-overlap | — | — |
 | **`framing`** | ✅ **arrows + marker + level** | — | — |
+| **`framing.camera_tilt`** | ✅ **tilt indicator** | — | — |
 | **`framing_suggestions`** | ✅ **directive arrows / zones** | — | — |
 | `filter` | — | ✅ auto-filter | ✅ preview |
 | `hashtags` | — | ✅ tags | ✅ pills |
