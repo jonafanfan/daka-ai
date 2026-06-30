@@ -192,12 +192,12 @@
     .toast.show { opacity: 1; }
     #fileInput { display: none; }
 
-    /* ── T9: live engine output (target marker + detected objects; scene_yap & framing on results) ── */
+    /* ── T9: live engine output — "stand here" target marker + live framing tips ── */
     #aiOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 24; display: none; }
     #aiOverlay.on { display: block; }
-    .yap { font-size: 15px; line-height: 1.5; color: var(--text); }
-    .fsugg { font-size: 13px; line-height: 1.5; color: var(--text); margin-bottom: 4px; }
-    .fsugg-tag { color: var(--text2); font-size: 11px; }
+    .framing-tips:not(:empty) { margin-bottom: 8px; }
+    .framing-tips-label { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.55); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
+    .framing-tip { font-size: 12px; color: rgba(255,255,255,0.9); line-height: 1.4; }
 
     .tilt-badge {
       position: absolute; top: calc(110px + env(safe-area-inset-top)); left: 50%;
@@ -262,6 +262,7 @@
     <!-- tips panel -->
     <div class="tip-panel" id="tipPanel">
       <div class="lighting-row" id="tipLighting"></div>
+      <div class="framing-tips" id="framingTips"></div>
       <div class="pose-swiper" id="poseSwiper"></div>
       <div class="pose-dots" id="poseDots"></div>
       <button class="take-photo" id="takePhotoBtn">Take Photo</button>
@@ -426,6 +427,10 @@
       $('poseSwiper').innerHTML = tips.map((t, i) =>
         '<div class="pose-item"><span class="pose-num">' + (i + 1) + '</span><span class="pose-text">' + esc(t) + '</span></div>').join('');
       $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
+      const fsugg = r.framing_suggestions || [];
+      $('framingTips').innerHTML = fsugg.length
+        ? '<div class="framing-tips-label">Framing</div>' + fsugg.map(s => '<div class="framing-tip">' + esc(s.instruction) + '</div>').join('')
+        : '';
       drawAIOverlay(r);
       renderCameraTilt(r.framing && r.framing.camera_tilt);
     }
@@ -439,7 +444,7 @@
       el.classList.add('show');
     }
 
-    /* ── T9: draw the engine's target marker + detected objects over the live video ── */
+    /* ── T9: draw the engine's "stand here" target marker over the live video ── */
     function drawAIOverlay(r) {
       const v = $('video'), cv = $('aiOverlay');
       if (!v || !cv || !v.videoWidth) return;
@@ -452,12 +457,6 @@
       const ox = (W - dw) / 2, oy = (H - dh) / 2;
       const PX = nx => ox + nx * dw, PY = ny => oy + ny * dh;
       const f = r.framing;
-
-      (r.objects || []).forEach(o => {
-        const b = o && o.box; if (!b) return;
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
-        ctx.strokeRect(PX(b.x), PY(b.y), b.w * dw, b.h * dh);
-      });
 
       if (f && f.target) {
         const tx = PX(f.target.x), ty = PY(f.target.y);
@@ -484,18 +483,9 @@
       updateFilterUI();
       $('sceneBadge').textContent = r.scene_type || 'Scene';
       const pills = (r.hashtags || []).map(h => '<div class="pill" data-tag="' + esc(h) + '">' + esc(h) + '</div>').join('');
-      const yapCard = r.scene_yap
-        ? '<div class="card"><div class="card-title">Vibe</div><div class="yap">' + esc(r.scene_yap) + '</div></div>'
-        : '';
-      const fsugg = r.framing_suggestions || [];
-      const framingCard = fsugg.length
-        ? '<div class="card"><div class="card-title">Framing</div>' + fsugg.map(s =>
-            '<div class="fsugg">• ' + esc(s.instruction) + (s.anchor ? ' <span class="fsugg-tag">[' + esc(s.anchor) + ']</span>' : '') + '</div>').join('') + '</div>'
-        : '';
-      const hashCard = pills
+      $('cards').innerHTML = pills
         ? '<div class="card"><div class="card-title">Hashtags <span class="ch">tap to copy</span></div><div class="pills">' + pills + '</div><div class="copy-all" id="copyAll">Copy all</div></div>'
         : '';
-      $('cards').innerHTML = yapCard + framingCard + hashCard;
       $('cards').querySelectorAll('.pill').forEach(p => p.addEventListener('click', () => copyText(p.dataset.tag, 'Copied!')));
       const ca = $('copyAll');
       if (ca) ca.addEventListener('click', () => copyText((r.hashtags || []).join(' '), 'All copied!'));
