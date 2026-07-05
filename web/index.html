@@ -117,6 +117,19 @@
     #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
     #camLevelVal.on { color: #66bb6a; }
 
+    /* live detection overlay + chips */
+    #liveOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 23; }
+    .people-chip { position: absolute; top: calc(20px + env(safe-area-inset-top)); right: 14px; z-index: 26; background: rgba(0,0,0,0.5); color: #fff; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; align-items: center; gap: 6px; }
+    .people-chip.show { display: inline-flex; }
+    .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
+    .status-chip.show { display: inline-block; }
+    .status-chip.warn { background: rgba(200,90,60,0.9); }
+
+    /* capture gate */
+    .gate-block { position: absolute; inset: 0; z-index: 60; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 26px; background: rgba(20,18,16,0.92); padding: 40px; text-align: center; }
+    .gate-block.show { display: flex; }
+    .gate-msg { color: #fff; font-size: 18px; line-height: 1.5; max-width: 320px; }
+
     /* loading */
     .loading { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,0.55); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 22px; }
     .loading.active { display: flex; }
@@ -215,6 +228,10 @@
   <!-- ── Camera ── -->
   <section id="camera" class="screen">
     <video id="video" autoplay playsinline muted></video>
+    <canvas id="liveOverlay"></canvas>
+
+    <div class="people-chip" id="peopleChip">👤 <span id="peopleCount">0</span></div>
+    <div class="status-chip" id="statusChip"></div>
 
     <div class="grid-overlay" id="gridOverlay">
       <div class="grid-line grid-h1"></div><div class="grid-line grid-h2"></div>
@@ -249,6 +266,12 @@
     <div class="loading" id="camLoading">
       <div class="spinner"></div>
       <div class="loading-text">Analysing scene…</div>
+    </div>
+
+    <!-- capture gate (poor light / blurry) -->
+    <div class="gate-block" id="gateBlock">
+      <div class="gate-msg" id="gateMsg"></div>
+      <button class="start-btn" id="gateScanAgain" style="max-width:260px;">Scan again</button>
     </div>
   </section>
 
@@ -326,12 +349,114 @@
         hasCamera = true;
         setCamState('idle');
         show('camera');
+        loadDetector();
+        startLive();
       } catch (e) {
         hasCamera = false;
         toast('Camera unavailable — pick a photo instead');
         $('fileInput').click();
       }
     }
+
+    /* ── Live person detection (MediaPipe) + scene guards (histogram / blur / blocked) ── */
+    let detector = null, detLoading = false;
+    let liveActive = false, liveRAF = null, lastVT = -1, lastCount = 0, lastDetections = [];
+    let detTs = 0, detErrors = 0, detDisabled = false;
+    let refHist = null, sceneScanned = false, lastCheck = 0;
+    const _fs = document.createElement('canvas'); _fs.width = 64; _fs.height = 64;
+
+    async function loadDetector() {
+      if (detector || detLoading) return; detLoading = true;
+      try {
+        const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+        const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        const model = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+        // CPU delegate: the WebGL/GPU delegate throws "invalid scalar to index variable" on some
+        // mobile browsers. CPU is a touch slower but far more compatible.
+        detector = await vision.ObjectDetector.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: model, delegate: 'CPU' },
+          runningMode: 'VIDEO', maxResults: 6, scoreThreshold: 0.45, categoryAllowlist: ['person'],
+        });
+      } catch (e) { /* CV unavailable — boxes/counter disabled, rest of app still works */ }
+      finally { detLoading = false; }
+    }
+
+    function coverTF(video, canvas) {
+      const W = canvas.clientWidth, H = canvas.clientHeight; canvas.width = W; canvas.height = H;
+      const vw = video.videoWidth || W, vh = video.videoHeight || H;
+      const s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s, ox = (W - dw) / 2, oy = (H - dh) / 2;
+      return { W, H, vw, vh, PX: n => ox + n * dw, PY: n => oy + n * dh, SX: n => n * dw, SY: n => n * dh };
+    }
+
+    function frameStats(video) {
+      const ctx = _fs.getContext('2d'); ctx.drawImage(video, 0, 0, 64, 64);
+      const d = ctx.getImageData(0, 0, 64, 64).data;
+      const lum = new Float32Array(64 * 64); let sum = 0;
+      for (let i = 0, j = 0; i < d.length; i += 4, j++) { const L = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2]; lum[j] = L; sum += L; }
+      const brightness = sum / (64 * 64);
+      let grad = 0, n = 0;                                 // horizontal high-frequency energy → sharpness proxy
+      for (let y = 0; y < 64; y++) for (let x = 1; x < 64; x++) { grad += Math.abs(lum[y*64+x] - lum[y*64+x-1]); n++; }
+      const detail = grad / n;
+      const hist = new Float32Array(16);
+      for (let j = 0; j < lum.length; j++) hist[Math.min(15, (lum[j] / 256 * 16) | 0)]++;
+      for (let k = 0; k < 16; k++) hist[k] /= lum.length;
+      return { brightness, detail, hist };
+    }
+    function histSim(a, b) { if (!a || !b) return 1; let s = 0; for (let i = 0; i < a.length; i++) s += Math.sqrt(a[i] * b[i]); return s; }
+
+    function startLive() { if (liveActive) return; liveActive = true; lastVT = -1; liveLoop(); }
+    function stopLive() {
+      liveActive = false; if (liveRAF) cancelAnimationFrame(liveRAF); liveRAF = null;
+      const cv = $('liveOverlay'); if (cv.width) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+      $('peopleChip').classList.remove('show'); $('statusChip').classList.remove('show');
+    }
+    function liveLoop() {
+      if (!liveActive) return;
+      liveRAF = requestAnimationFrame(liveLoop);
+      const video = $('video'); if (!video.videoWidth) return;
+      const cv = $('liveOverlay'), tf = coverTF(video, cv), ctx = cv.getContext('2d');
+      ctx.clearRect(0, 0, tf.W, tf.H);
+
+      // run detection on new frames; redraw the last boxes every frame (smooth)
+      if (detector && !detDisabled && video.readyState >= 2 && video.currentTime !== lastVT) {
+        lastVT = video.currentTime;
+        detTs = Math.max(detTs + 1, Math.round(performance.now()));   // strictly increasing timestamp
+        try {
+          const r = detector.detectForVideo(video, detTs);
+          if (r && r.detections) { lastDetections = r.detections; lastCount = r.detections.length; detErrors = 0; }
+        } catch (e) {
+          if (++detErrors > 10) { detDisabled = true; lastDetections = []; lastCount = 0; }   // degrade gracefully
+        }
+      }
+      if (lastDetections.length) {
+        ctx.lineWidth = 3; ctx.strokeStyle = '#66bb6a'; ctx.fillStyle = 'rgba(102,187,106,0.10)';
+        for (const det of lastDetections) {
+          const b = det.boundingBox;
+          const x = tf.PX(b.originX / tf.vw), y = tf.PY(b.originY / tf.vh);
+          const w = tf.SX(b.width / tf.vw), h = tf.SY(b.height / tf.vh);
+          ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+        }
+      }
+      $('peopleCount').textContent = lastCount;
+      $('peopleChip').classList.add('show');
+
+      // scene guards (~3×/sec)
+      const now = performance.now();
+      if (now - lastCheck > 300) {
+        lastCheck = now;
+        const st = frameStats(video);
+        let msg = '';
+        if (st.brightness < 22 || st.detail < 1.3) msg = 'Camera blocked';
+        else if (st.detail < 3.2) msg = 'Hold steady — blurry';
+        else if (sceneScanned && refHist && histSim(refHist, st.hist) > 0.985 && lastCount === 0) msg = 'Step into frame';
+        const s = $('statusChip');
+        if (msg) { s.textContent = msg; s.classList.add('show', 'warn'); }
+        else s.classList.remove('show');
+      }
+    }
+
+    function openGate(msg) { $('camLoading').classList.remove('active'); $('gateMsg').textContent = msg; $('gateBlock').classList.add('show'); }
+    function closeGate() { $('gateBlock').classList.remove('show'); setCamState('idle'); }
 
     /* ── Frame grabbing ── */
     function grabScanBlob() {
@@ -371,6 +496,10 @@
       setCamState('loading');
       try {
         analysisResult = await postAnalyze(blob);
+        // capture gate: block on poor light or a blurry frame — force a rescan
+        if (analysisResult.lighting && analysisResult.lighting.quality === 'Poor') { openGate('Not enough light — find a brighter spot, then scan again.'); return; }
+        if (analysisResult.blurry) { openGate('That shot was blurry — hold steady, then scan again.'); return; }
+        refHist = frameStats($('video')).hist; sceneScanned = true;   // reference of the empty scene
         renderTips(analysisResult);
         setCamState('tips');
       } catch (e) {
@@ -400,6 +529,7 @@
       const dataURL = grabKeeperDataURL();
       if (!dataURL) { toast('Camera not ready'); return; }
       loadCaptured(dataURL);
+      stopLive();
       renderResults(analysisResult);
       show('results');
     }
@@ -530,7 +660,8 @@
     $('filterBtn').addEventListener('click', () => { filterActive = !filterActive; updateFilterUI(); });
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
-    $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); } else { show('home'); } });
+    $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); startLive(); } else { stopLive(); show('home'); } });
+    $('gateScanAgain').addEventListener('click', closeGate);
 
     /* ── Level slider (device tilt) ── */
     if (window.DeviceOrientationEvent) {
