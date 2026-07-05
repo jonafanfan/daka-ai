@@ -147,22 +147,7 @@
     .take-photo:active { transform: scale(0.97); }
     .rescan { display: block; text-align: center; color: rgba(255,255,255,0.6); font-size: 13px; padding: 4px; }
 
-    #camLevel {
-      position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
-      display: flex; align-items: center; gap: 10px; z-index: 25;
-      pointer-events: none;
-    }
-    #camLevelTrack { width: 200px; height: 2px; background: rgba(255,255,255,0.25); border-radius: 1px; position: relative; }
-    #camLevelDot {
-      position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
-      border-radius: 50%; background: #fff; transform: translate(-50%,-50%);
-      box-shadow: 0 0 6px rgba(0,0,0,.4);
-    }
-    #camLevelDot.on { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,.7); }
-    #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
-    #camLevelVal.on { color: #66bb6a; }
-
-/* ─── Results ─── */
+    /* ─── Results ─── */
     #results { background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .results-inner { min-height: 100%; display: flex; flex-direction: column; }
     .photo-wrap { position: relative; width: 100%; aspect-ratio: 3 / 4; background: #000; flex-shrink: 0; }
@@ -191,26 +176,6 @@
     .toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 14px; z-index: 100; opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 80%; text-align: center; }
     .toast.show { opacity: 1; }
     #fileInput { display: none; }
-
-    /* ── T9: live engine output — "stand here" target marker + live framing tips ── */
-    #aiOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 24; display: none; }
-    #aiOverlay.on { display: block; }
-    .framing-tips:not(:empty) { margin-bottom: 8px; }
-    .framing-tips-label { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.55); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
-    .framing-tip { font-size: 12px; color: rgba(255,255,255,0.9); line-height: 1.4; }
-
-    .tilt-badge {
-      position: absolute; top: calc(110px + env(safe-area-inset-top)); left: 50%;
-      transform: translateX(-50%); z-index: 25; pointer-events: none;
-      background: rgba(0,0,0,0.45); color: #fff; padding: 4px 14px;
-      border-radius: 100px; font-size: 13px; font-weight: 500;
-      display: none; align-items: center; gap: 6px;
-      backdrop-filter: blur(4px); white-space: nowrap;
-    }
-    .tilt-badge.show { display: flex; }
-    .tilt-arrow-up::before  { content: "⬆  "; }
-    .tilt-arrow-down::before { content: "⬇  "; }
-    #camTiltLabel { font-size: 12px; color: rgba(255,255,255,0.85); }
   </style>
 </head>
 <body>
@@ -248,8 +213,6 @@
       <div class="grid-line grid-v1"></div><div class="grid-line grid-v2"></div>
     </div>
 
-    <canvas id="aiOverlay"></canvas>
-
     <div class="scene-badge-top" id="sceneBadgeTop"></div>
     <div class="grid-prompt" id="gridPrompt"><span>Position your subject at a grid intersection</span></div>
 
@@ -262,7 +225,6 @@
     <!-- tips panel -->
     <div class="tip-panel" id="tipPanel">
       <div class="lighting-row" id="tipLighting"></div>
-      <div class="framing-tips" id="framingTips"></div>
       <div class="pose-swiper" id="poseSwiper"></div>
       <div class="pose-dots" id="poseDots"></div>
       <button class="take-photo" id="takePhotoBtn">Take Photo</button>
@@ -274,17 +236,8 @@
       <div class="spinner"></div>
       <div class="loading-text">Analysing scene…</div>
     </div>
-
-    <div id="camLevel">
-      <div id="camLevelTrack"><div id="camLevelDot"></div></div>
-      <span id="camLevelVal">0°</span>
-    </div>
-
-    <div id="camTilt" class="tilt-badge">
-      <span id="camTiltArrow"></span>
-      <span id="camTiltLabel"></span>
-    </div>
   </section>
+
   <!-- ── Results ── -->
   <section id="results" class="screen">
     <div class="results-inner">
@@ -326,6 +279,7 @@
     let currentFilter = 'Vivid';
     let filterActive = false;
     let hasCamera = false;
+
     const $ = (id) => document.getElementById(id);
     function show(id) {
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -349,8 +303,6 @@
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
-      $('camLevel').style.display    = s === 'idle' || s === 'tips' ? 'flex' : 'none';
-      $('aiOverlay').classList.toggle('on', tips);
     }
 
     async function startCamera() {
@@ -427,45 +379,6 @@
       $('poseSwiper').innerHTML = tips.map((t, i) =>
         '<div class="pose-item"><span class="pose-num">' + (i + 1) + '</span><span class="pose-text">' + esc(t) + '</span></div>').join('');
       $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
-      const fsugg = r.framing_suggestions || [];
-      $('framingTips').innerHTML = fsugg.length
-        ? '<div class="framing-tips-label">Framing</div>' + fsugg.map(s => '<div class="framing-tip">' + esc(s.instruction) + '</div>').join('')
-        : '';
-      drawAIOverlay(r);
-      renderCameraTilt(r.framing && r.framing.camera_tilt);
-    }
-
-    function renderCameraTilt(ct) {
-      const el = $('camTilt'), arrow = $('camTiltArrow'), label = $('camTiltLabel');
-      if (!ct || ct.direction === 'ok') { el.classList.remove('show'); return; }
-      const dir = ct.direction === 'up' ? 'down' : 'up';
-      arrow.className = dir === 'up' ? 'tilt-arrow-up' : 'tilt-arrow-down';
-      label.textContent = 'Tilt ' + dir;
-      el.classList.add('show');
-    }
-
-    /* ── T9: draw the engine's "stand here" target marker over the live video ── */
-    function drawAIOverlay(r) {
-      const v = $('video'), cv = $('aiOverlay');
-      if (!v || !cv || !v.videoWidth) return;
-      const W = v.clientWidth, H = v.clientHeight;
-      cv.width = W; cv.height = H;
-      const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, W, H);
-      // map normalised [0,1] top-left coords through the video's object-fit: cover transform
-      const scale = Math.max(W / v.videoWidth, H / v.videoHeight);
-      const dw = v.videoWidth * scale, dh = v.videoHeight * scale;
-      const ox = (W - dw) / 2, oy = (H - dh) / 2;
-      const PX = nx => ox + nx * dw, PY = ny => oy + ny * dh;
-      const f = r.framing;
-
-      if (f && f.target) {
-        const tx = PX(f.target.x), ty = PY(f.target.y);
-        ctx.beginPath(); ctx.arc(tx, ty, 16, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(197,122,82,0.30)'; ctx.fill();
-        ctx.lineWidth = 3; ctx.strokeStyle = '#C57A52'; ctx.stroke();
-        ctx.fillStyle = '#fff'; ctx.font = '600 12px Georgia, serif'; ctx.textAlign = 'center';
-        ctx.fillText('stand here', tx, ty - 24); ctx.textAlign = 'left';
-      }
     }
 
     /* ── Stage 2: take the keeper photo → results ── */
@@ -596,7 +509,6 @@
     });
 
     /* ── Wire up ── */
-
     $('startBtn').addEventListener('click', startCamera);
     $('shutter').addEventListener('click', scanScene);
     $('takePhotoBtn').addEventListener('click', takePhoto);
@@ -605,31 +517,6 @@
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); } else { show('home'); } });
-
-    /* ── Level ── */
-    if (window.DeviceOrientationEvent) {
-      function onLevel(e) {
-        const g = e.gamma;
-        if (g == null) return;
-        const d = $('camLevelDot'), v = $('camLevelVal');
-        if (!d || !v) return;
-        const p = Math.max(0, Math.min(100, ((g / 30) + 1) * 50));
-        const l = Math.abs(g) < 1;
-        d.style.left = p + '%';
-        d.classList.toggle('on', l);
-        v.classList.toggle('on', l);
-        v.textContent = Math.round(Math.abs(g)) + '°';
-      }
-      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        $('startBtn').addEventListener('click', function iosPerm() {
-          DeviceOrientationEvent.requestPermission().then(r => {
-            if (r === 'granted') window.addEventListener('deviceorientation', onLevel);
-          }).catch(() => {});
-        });
-      } else {
-        window.addEventListener('deviceorientation', onLevel);
-      }
-    }
   </script>
 </body>
 </html>
