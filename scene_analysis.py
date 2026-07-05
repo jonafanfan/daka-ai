@@ -115,10 +115,11 @@ def extract_features(image_path: str) -> dict:
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 100, minLineLength=80, maxLineGap=10)
     alignment = 1.0
     if lines is not None:
-        deviations = [
-            abs(np.degrees(np.arctan2(l[0][3] - l[0][1], l[0][2] - l[0][0]))) % 90
-            for l in lines
-        ]
+        deviations = []
+        for l in lines:
+            # HoughLinesP shape varies by OpenCV build: (N,1,4) or (N,4). Flatten to be safe.
+            x1, y1, x2, y2 = np.asarray(l).ravel()[:4]
+            deviations.append(abs(np.degrees(np.arctan2(y2 - y1, x2 - x1))) % 90)
         deviations = [d if d < 45 else 90 - d for d in deviations]
         critical = [d for d in deviations if 0.5 < d < 20]
         if critical:
