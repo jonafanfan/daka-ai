@@ -109,6 +109,14 @@
     .shutter-inner { width: 56px; height: 56px; border-radius: 50%; background: #fff; }
     .shutter-hint { color: rgba(255,255,255,0.8); font-size: 13px; }
 
+    /* level slider (device tilt) */
+    #camLevel { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; z-index: 25; pointer-events: none; }
+    #camLevelTrack { width: 200px; height: 2px; background: rgba(255,255,255,0.25); border-radius: 1px; position: relative; }
+    #camLevelDot { position: absolute; top: 50%; left: 50%; width: 14px; height: 14px; border-radius: 50%; background: #fff; transform: translate(-50%,-50%); box-shadow: 0 0 6px rgba(0,0,0,.4); }
+    #camLevelDot.on { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,.7); }
+    #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
+    #camLevelVal.on { color: #66bb6a; }
+
     /* loading */
     .loading { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,0.55); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 22px; }
     .loading.active { display: flex; }
@@ -215,6 +223,12 @@
 
     <div class="scene-badge-top" id="sceneBadgeTop"></div>
     <div class="grid-prompt" id="gridPrompt"><span>Position your subject at a grid intersection</span></div>
+
+    <!-- level slider (device tilt) -->
+    <div id="camLevel">
+      <div id="camLevelTrack"><div id="camLevelDot"></div></div>
+      <span id="camLevelVal">0°</span>
+    </div>
 
     <!-- idle: shutter -->
     <div class="cam-idle" id="camIdle">
@@ -517,6 +531,30 @@
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); } else { show('home'); } });
+
+    /* ── Level slider (device tilt) ── */
+    if (window.DeviceOrientationEvent) {
+      const onLevel = (e) => {
+        const g = e.gamma; if (g == null) return;
+        const d = $('camLevelDot'), v = $('camLevelVal'); if (!d || !v) return;
+        const p = Math.max(0, Math.min(100, ((g / 30) + 1) * 50));
+        const level = Math.abs(g) < 1;
+        d.style.left = p + '%';
+        d.classList.toggle('on', level);
+        v.classList.toggle('on', level);
+        v.textContent = Math.round(Math.abs(g)) + '°';
+      };
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+: request motion permission on the same user gesture that starts the camera
+        $('startBtn').addEventListener('click', () => {
+          DeviceOrientationEvent.requestPermission().then(r => {
+            if (r === 'granted') window.addEventListener('deviceorientation', onLevel);
+          }).catch(() => {});
+        });
+      } else {
+        window.addEventListener('deviceorientation', onLevel);
+      }
+    }
   </script>
 </body>
 </html>
