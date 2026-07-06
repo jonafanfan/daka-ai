@@ -333,6 +333,8 @@
     let targetPos = null;          // {x, y} from analysis.placement
     let coachPoseMs = 0;
     let lastPoseTime = 0;
+    let lastPoseLM = null;
+    let smPx = null, smPy = null;  // smoothed subject position
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -353,7 +355,6 @@
         hasCamera = true;
         setCamState('idle');
         show('camera');
-        loadDetector();
         loadPoseLandmarker();
         detectLenses();
         startLive();
@@ -392,29 +393,11 @@
     document.querySelectorAll('.lens-opt').forEach(o => o.addEventListener('click', () => switchLens(o.dataset.lens)));
 
     /* ── Live person detection (MediaPipe) + scene guards (histogram / blur / blocked) ── */
-    let detector = null, detLoading = false;
-    let liveActive = false, liveRAF = null, lastVT = -1, lastCount = 0, lastDetections = [];
-    let detTs = 0, detErrors = 0, detDisabled = false;
+    let liveActive = false, liveRAF = null, lastVT = -1;
     let refHist = null, sceneScanned = false, lastCheck = 0;
     const _fs = document.createElement('canvas'); _fs.width = 64; _fs.height = 64;
 
-    async function loadDetector() {
-      if (detector || detLoading) return; detLoading = true;
-      try {
-        const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
-        const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-        const model = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
-        // CPU delegate: the WebGL/GPU delegate throws "invalid scalar to index variable" on some
-        // mobile browsers. CPU is a touch slower but far more compatible.
-        detector = await vision.ObjectDetector.createFromOptions(fileset, {
-          baseOptions: { modelAssetPath: model, delegate: 'CPU' },
-          runningMode: 'VIDEO', maxResults: 6, scoreThreshold: 0.45, categoryAllowlist: ['person'],
-        });
-      } catch (e) { /* CV unavailable — boxes/counter disabled, rest of app still works */ }
-      finally { detLoading = false; }
-    }
-
-    /* ── PoseLandmarker (for facing direction) ── */
+    /* ── PoseLandmarker (person presence, position + facing) ── */
     let poseLandmarker = null, poseLoading = false;
     async function loadPoseLandmarker() {
       if (poseLandmarker || poseLoading) return;
@@ -505,6 +488,7 @@
     function startLive() { if (liveActive) return; liveActive = true; lastVT = -1; liveLoop(); }
     function resetCoaching() {
       coachingActive = false; targetPos = null; lastPoseLM = null; lastPoseTime = 0;
+      smPx = null; smPy = null;
       setCue(null, null);
     }
     function stopLive() {
@@ -520,19 +504,6 @@
       const cv = $('liveOverlay'), tf = coverTF(video, cv), ctx = cv.getContext('2d');
       ctx.clearRect(0, 0, tf.W, tf.H);
 
-      // run detection on new frames; redraw the last boxes every frame (smooth)
-      if (detector && !detDisabled && video.readyState >= 2 && video.currentTime !== lastVT) {
-        lastVT = video.currentTime;
-        detTs = Math.max(detTs + 1, Math.round(performance.now()));   // strictly increasing timestamp
-        try {
-          const r = detector.detectForVideo(video, detTs);
-          if (r && r.detections) { lastDetections = r.detections; lastCount = r.detections.length; detErrors = 0; }
-        } catch (e) {
-          if (++detErrors > 10) { detDisabled = true; lastDetections = []; lastCount = 0; }   // degrade gracefully
-        }
-      }
-      // (person bounding boxes + counter removed; detection still powers coaching + "step into frame")
-
       // scene guards (~3×/sec)
       const now = performance.now();
       if (now - lastCheck > 300) {
@@ -541,7 +512,6 @@
         let msg = '';
         if (st.brightness < 22 || st.detail < 1.3) msg = 'Camera blocked';
         else if (st.detail < 3.2) msg = 'Hold steady — blurry';
-        else if (sceneScanned && refHist && histSim(refHist, st.hist) > 0.985 && lastCount === 0) msg = 'Step into frame';
         const s = $('statusChip');
         if (msg) { s.textContent = msg; s.classList.add('show', 'warn'); }
         else s.classList.remove('show');
@@ -564,29 +534,30 @@
         // clear stale pose landmarks (person walked away)
         if (lastPoseTime && performance.now() - lastPoseTime > 800) lastPoseLM = null;
 
-        // determine person's centre position
-        let px, py;
-        if (lastPoseLM && lastPoseLM.length >= 12) {
-          const l = lastPoseLM;
-          const hips = { x: (l[23].x + l[24].x) / 2, y: (l[23].y + l[24].y) / 2 };
-          px = hips.x; py = hips.y;
-        } else if (lastDetections.length) {
-          const b = lastDetections[0].boundingBox;
-          px = (b.originX + b.width / 2) / tf.vw;
-          py = (b.originY + b.height * 0.7) / tf.vh;
+        // person's ground position from the hip midpoint (PoseLandmarker only — a real body pose,
+        // so lamps/tables/etc. are never mistaken for a subject)
+        let px = null, py = null;
+        if (lastPoseLM && lastPoseLM.length >= 25) {
+          px = (lastPoseLM[23].x + lastPoseLM[24].x) / 2;
+          py = (lastPoseLM[23].y + lastPoseLM[24].y) / 2;
         }
+        // smooth to kill per-frame jitter so the cue tracks real movement
+        if (px != null) {
+          smPx = (smPx == null) ? px : smPx + (px - smPx) * 0.35;
+          smPy = (smPy == null) ? py : smPy + (py - smPy) * 0.35;
+        } else { smPx = smPy = null; }
 
-        // draw the foot marker
-        const inZone = px != null &&
-          Math.abs(px - targetPos.x) < 0.10 &&
-          Math.abs(py - targetPos.y) < 0.12;
+        const cx = smPx, cy = smPy;
+        const inZone = cx != null &&
+          Math.abs(cx - targetPos.x) < 0.10 &&
+          Math.abs(cy - targetPos.y) < 0.12;
         drawFootprint(tf, ctx, targetPos, inZone);
 
-        // coaching text + arrow
-        if (px == null) {
+        // arrow/text point where the subject must move ON SCREEN to reach the marker
+        if (cx == null) {
           setCue('Step into frame', null);
         } else if (!inZone) {
-          const dir = px < targetPos.x ? 'right' : 'left';
+          const dir = cx < targetPos.x ? 'right' : 'left';
           setCue(dir === 'right' ? 'Move right' : 'Move left', dir);
         } else if (lastPoseLM && lastPoseLM.length >= 13) {
           const facing = detectFacing(lastPoseLM);
@@ -812,23 +783,21 @@
     (function setupLevel() {
       const onMotion = (e) => {
         const a = e.accelerationIncludingGravity; if (!a) return;
-        const x = a.x || 0, y = a.y || 0;
+        const x = a.x || 0, y = a.y || 0, z = a.z || 0;
+        const g = Math.hypot(x, y, z) || 1;
         const d = $('camLevelDot'), v = $('camLevelVal'); if (!d || !v) return;
-        // If the phone is near-flat (camera pointing up/down) there is no horizon to level to.
-        if (Math.hypot(x, y) < 3.5) {
-          d.style.left = '50%'; d.classList.remove('on'); v.classList.remove('on'); v.textContent = '—';
-          return;
-        }
-        // Roll about the viewing axis. Fold so "top-up & level" reads 0° regardless of the
-        // platform's gravity-sign convention (iOS vs Android).
-        let roll = Math.atan2(x, y) * 180 / Math.PI;
-        if (roll > 90) roll -= 180; else if (roll < -90) roll += 180;
-        const p = Math.max(0, Math.min(100, ((roll / 30) + 1) * 50));
-        const level = Math.abs(roll) < 2;
+        // Angle of the phone's long axis from world-vertical: 0 = perfectly upright, 90 = flat.
+        // Pitching (aim up/down) OR rolling (lean left/right) raises it; yawing (rotating while
+        // staying upright) leaves it at 0. |y| makes it sign-agnostic across iOS/Android.
+        const tilt = Math.acos(Math.min(1, Math.abs(y) / g)) * 180 / Math.PI;
+        // horizontal lean (roll) drives the dot; pitching keeps the dot centred but un-green
+        const lean = Math.atan2(x, Math.abs(y)) * 180 / Math.PI;
+        const p = Math.max(0, Math.min(100, ((lean / 30) + 1) * 50));
+        const upright = tilt < 3;
         d.style.left = p + '%';
-        d.classList.toggle('on', level);
-        v.classList.toggle('on', level);
-        v.textContent = Math.round(Math.abs(roll)) + '°';
+        d.classList.toggle('on', upright);
+        v.classList.toggle('on', upright);
+        v.textContent = Math.round(tilt) + '°';
       };
       const begin = () => window.addEventListener('devicemotion', onMotion);
       const DME = window.DeviceMotionEvent;
