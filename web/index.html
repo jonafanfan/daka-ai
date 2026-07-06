@@ -119,6 +119,17 @@
 
     /* live detection overlay + chips */
     #liveOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 23; }
+    .coach-cue {
+      position: absolute; left: 50%; bottom: calc(160px + env(safe-area-inset-bottom));
+      transform: translateX(-50%); display: none; align-items: center; gap: 8px;
+      background: rgba(0,0,0,0.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      padding: 8px 18px; border-radius: 100px; z-index: 27;
+      pointer-events: none; white-space: nowrap;
+    }
+    .coach-cue.show { display: flex; }
+    #coachArrow { font-size: 20px; color: #fff; min-width: 22px; text-align: center; line-height: 1; }
+    #coachText { font-size: 14px; color: #fff; font-weight: 500; }
+
     .people-chip { position: absolute; top: calc(20px + env(safe-area-inset-top)); right: 14px; z-index: 26; background: rgba(0,0,0,0.5); color: #fff; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; align-items: center; gap: 6px; }
     .people-chip.show { display: inline-flex; }
     .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
@@ -235,6 +246,10 @@
   <section id="camera" class="screen">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="liveOverlay"></canvas>
+    <div id="coachCue" class="coach-cue">
+      <span id="coachArrow"></span>
+      <span id="coachText">Step into frame</span>
+    </div>
 
     <div class="people-chip" id="peopleChip">👤 <span id="peopleCount">0</span></div>
     <div class="status-chip" id="statusChip"></div>
@@ -344,6 +359,12 @@
     function scaledSize(w, h, cap) { const m = Math.max(w, h); if (m <= cap) return [w, h]; const r = cap / m; return [Math.round(w*r), Math.round(h*r)]; }
     function errMsg(e) { return e.name === 'AbortError' ? 'Server took too long — it may be waking up. Try again.' : (e.message || 'Analysis failed'); }
 
+    /* ── Coaching state ── */
+    let coachingActive = false;
+    let targetPos = null;          // {x, y} from analysis.placement
+    let coachPoseMs = 0;
+    let lastPoseTime = 0;
+
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
       $('camIdle').style.display     = s === 'idle' ? 'flex' : 'none';
@@ -354,6 +375,7 @@
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       updateLensVisibility();
+      if (s !== 'tips') resetCoaching();
     }
 
     async function startCamera() {
@@ -364,6 +386,7 @@
         setCamState('idle');
         show('camera');
         loadDetector();
+        loadPoseLandmarker();
         detectLenses();
         startLive();
       } catch (e) {
@@ -423,6 +446,71 @@
       finally { detLoading = false; }
     }
 
+    /* ── PoseLandmarker (for facing direction) ── */
+    let poseLandmarker = null, poseLoading = false;
+    async function loadPoseLandmarker() {
+      if (poseLandmarker || poseLoading) return;
+      poseLoading = true;
+      try {
+        const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+        const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+        const model = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+        try {
+          poseLandmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: model, delegate: 'GPU' },
+            runningMode: 'VIDEO', numPoses: 1,
+          });
+        } catch (e) {
+          poseLandmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: model, delegate: 'CPU' },
+            runningMode: 'VIDEO', numPoses: 1,
+          });
+        }
+      } catch (e) { /* PoseLandmarker unavailable — facing guidance skipped */ }
+      finally { poseLoading = false; }
+    }
+
+    /* ── Coaching helpers ── */
+    function setCue(text, arrow) {
+      const el = $('coachCue');
+      if (!text) { el.classList.remove('show'); return; }
+      $('coachText').textContent = text;
+      const a = $('coachArrow');
+      a.textContent = arrow ? { left: '←', right: '→', up: '↑', down: '↓' }[arrow] || '' : '';
+      a.style.display = arrow ? 'inline' : 'none';
+      el.classList.add('show');
+    }
+
+    function drawFootprint(tf, ctx, target, green) {
+      const fx = tf.PX(target.x), fy = tf.PY(target.y);
+      const rw = tf.SX(0.09), rh = tf.SY(0.028);
+      const col = green ? '#66bb6a' : '#C57A52';
+      ctx.save();
+      ctx.strokeStyle = col; ctx.lineWidth = 3;
+      ctx.fillStyle = green ? 'rgba(102,187,106,0.22)' : 'rgba(197,122,82,0.18)';
+      ctx.beginPath(); ctx.ellipse(fx, fy, rw, rh, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      const boxH = tf.SY(0.6), hw = rw * 0.9;
+      ctx.setLineDash([7, 7]); ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fx - hw, fy); ctx.lineTo(fx - hw, fy - boxH);
+      ctx.moveTo(fx + hw, fy); ctx.lineTo(fx + hw, fy - boxH);
+      ctx.moveTo(fx - hw, fy - boxH); ctx.lineTo(fx + hw, fy - boxH);
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    function detectFacing(landmarks) {
+      const ls = landmarks[11], rs = landmarks[12];  // left/right shoulder
+      const nose = landmarks[0];
+      if (!ls || !rs || !nose) return null;
+      const midX = (ls.x + rs.x) / 2;
+      const noseOffset = nose.x - midX;               // +ve = nose right of shoulder midpoint
+      const zDiff = rs.z - ls.z;                       // +ve = right shoulder further → facing left
+      const facingScore = noseOffset * 0.5 + zDiff * 2;
+      if (Math.abs(facingScore) < 0.06) return 'forward';
+      return facingScore > 0 ? 'right' : 'left';
+    }
+
     function coverTF(video, canvas) {
       const W = canvas.clientWidth, H = canvas.clientHeight; canvas.width = W; canvas.height = H;
       const vw = video.videoWidth || W, vh = video.videoHeight || H;
@@ -447,10 +535,15 @@
     function histSim(a, b) { if (!a || !b) return 1; let s = 0; for (let i = 0; i < a.length; i++) s += Math.sqrt(a[i] * b[i]); return s; }
 
     function startLive() { if (liveActive) return; liveActive = true; lastVT = -1; liveLoop(); }
+    function resetCoaching() {
+      coachingActive = false; targetPos = null; lastPoseLM = null; lastPoseTime = 0;
+      setCue(null, null);
+    }
     function stopLive() {
       liveActive = false; if (liveRAF) cancelAnimationFrame(liveRAF); liveRAF = null;
       const cv = $('liveOverlay'); if (cv.width) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
       $('peopleChip').classList.remove('show'); $('statusChip').classList.remove('show');
+      resetCoaching();
     }
     function liveLoop() {
       if (!liveActive) return;
@@ -494,6 +587,61 @@
         const s = $('statusChip');
         if (msg) { s.textContent = msg; s.classList.add('show', 'warn'); }
         else s.classList.remove('show');
+      }
+
+      // ── coaching overlay (stand here + face direction) ──
+      if (coachingActive && targetPos) {
+        // run PoseLandmarker every ~3 frames for facing detection
+        if (poseLandmarker && video.readyState >= 2 && video.currentTime !== coachPoseMs) {
+          coachPoseMs = video.currentTime;
+          try {
+            const res = poseLandmarker.detectForVideo(video, Math.round(performance.now()));
+            if (res && res.landmarks && res.landmarks.length) {
+              lastPoseLM = res.landmarks[0];
+              lastPoseTime = performance.now();
+            }
+          } catch (e) { /* skip */ }
+        }
+
+        // clear stale pose landmarks (person walked away)
+        if (lastPoseTime && performance.now() - lastPoseTime > 800) lastPoseLM = null;
+
+        // determine person's centre position
+        let px, py;
+        if (lastPoseLM && lastPoseLM.length >= 12) {
+          const l = lastPoseLM;
+          const hips = { x: (l[23].x + l[24].x) / 2, y: (l[23].y + l[24].y) / 2 };
+          px = hips.x; py = hips.y;
+        } else if (lastDetections.length) {
+          const b = lastDetections[0].boundingBox;
+          px = (b.originX + b.width / 2) / tf.vw;
+          py = (b.originY + b.height * 0.7) / tf.vh;
+        }
+
+        // draw the foot marker
+        const inZone = px != null &&
+          Math.abs(px - targetPos.x) < 0.10 &&
+          Math.abs(py - targetPos.y) < 0.12;
+        drawFootprint(tf, ctx, targetPos, inZone);
+
+        // coaching text + arrow
+        if (px == null) {
+          setCue('Step into frame', null);
+        } else if (!inZone) {
+          const dir = px < targetPos.x ? 'right' : 'left';
+          setCue(dir === 'right' ? 'Move right' : 'Move left', dir);
+        } else if (lastPoseLM && lastPoseLM.length >= 13) {
+          const facing = detectFacing(lastPoseLM);
+          if (facing === 'left') {
+            setCue('Turn to face the camera \u2192', 'right');
+          } else if (facing === 'right') {
+            setCue('Turn to face the camera \u2190', 'left');
+          } else {
+            setCue('Perfect — take the photo!', null);
+          }
+        } else {
+          setCue('Good position — face the camera', null);
+        }
       }
     }
 
@@ -543,6 +691,13 @@
         if (analysisResult.blurry) { openGate('That shot was blurry — hold steady, then scan again.'); return; }
         refHist = frameStats($('video')).hist; sceneScanned = true;   // reference of the empty scene
         renderTips(analysisResult);
+        // set "stand here" target from server placement, fallback to default rule-of-thirds
+        targetPos = (analysisResult.placement && analysisResult.placement.x && analysisResult.placement.y)
+          ? { x: analysisResult.placement.x, y: analysisResult.placement.y }
+          : { x: 1/3, y: 2/3 };
+        coachingActive = true;
+        $('coachCue').classList.add('show');
+        setCue('Step into frame', null);
         setCamState('tips');
       } catch (e) {
         setCamState('idle');
