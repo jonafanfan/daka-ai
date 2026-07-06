@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet" />
   <style>
-    /* ─── Warm Film palette  ─── */
+    /* ─── Warm Film palette ─── */
     :root {
       --bg: #F6F1E9;
       --surface: #ECE3D5;
@@ -93,12 +93,6 @@
       font-size: 14px; font-weight: 600; white-space: nowrap; display: none;
     }
 
-    .grid-prompt {
-      position: absolute; left: 0; right: 0; bottom: 52%;
-      display: none; justify-content: center; pointer-events: none;
-    }
-    .grid-prompt span { background: rgba(0,0,0,0.4); color: rgba(255,255,255,0.9); font-size: 12px; padding: 5px 14px; border-radius: 100px; }
-
     /* idle shutter */
     .cam-idle {
       position: absolute; left: 0; right: 0; bottom: calc(40px + env(safe-area-inset-bottom));
@@ -130,8 +124,6 @@
     #coachArrow { font-size: 20px; color: #fff; min-width: 22px; text-align: center; line-height: 1; }
     #coachText { font-size: 14px; color: #fff; font-weight: 500; }
 
-    .people-chip { position: absolute; top: calc(20px + env(safe-area-inset-top)); right: 14px; z-index: 26; background: rgba(0,0,0,0.5); color: #fff; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; align-items: center; gap: 6px; }
-    .people-chip.show { display: inline-flex; }
     .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
     .status-chip.show { display: inline-block; }
     .status-chip.warn { background: rgba(200,90,60,0.9); }
@@ -162,24 +154,6 @@
       display: none; animation: slideUp 0.3s ease;
     }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-
-    .lighting-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
-    .badge { padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 500; }
-    .badge-green { background: var(--accent-tint); color: var(--accent); }
-    .badge-tan   { background: var(--tan-tint); color: var(--tan); }
-    .badge-muted { background: var(--surface); color: var(--text2); }
-    .tip-panel .lighting-tip { width: 100%; font-size: 12px; color: rgba(255,255,255,0.82); margin-top: 1px; line-height: 1.35;
-      display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-
-    .pose-swiper { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
-    .pose-swiper::-webkit-scrollbar { display: none; }
-    .pose-item { flex: 0 0 100%; scroll-snap-align: center; display: flex; gap: 10px; align-items: flex-start; min-height: 38px; }
-    .pose-num { font-size: 17px; font-weight: 700; color: var(--accent); min-width: 20px; line-height: 1.25; }
-    .pose-text { font-size: 13px; color: #fff; line-height: 1.4; flex: 1; }
-
-    .pose-dots { display: flex; justify-content: center; gap: 5px; margin: 6px 0 10px; }
-    .dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.4); }
-    .dot.active { background: #fff; }
 
     .take-photo { width: 100%; height: 46px; background: var(--accent); color: #fff; border: none; font-family: inherit; font-size: 15px; font-weight: 600; border-radius: 100px; margin-bottom: 6px; }
     .take-photo:active { transform: scale(0.97); }
@@ -251,7 +225,6 @@
       <span id="coachText">Step into frame</span>
     </div>
 
-    <div class="people-chip" id="peopleChip">👤 <span id="peopleCount">0</span></div>
     <div class="status-chip" id="statusChip"></div>
 
     <div class="grid-overlay" id="gridOverlay">
@@ -260,7 +233,6 @@
     </div>
 
     <div class="scene-badge-top" id="sceneBadgeTop"></div>
-    <div class="grid-prompt" id="gridPrompt"><span>Position your subject at a grid intersection</span></div>
 
     <!-- level slider (device tilt) -->
     <div id="camLevel">
@@ -282,9 +254,6 @@
 
     <!-- tips panel -->
     <div class="tip-panel" id="tipPanel">
-      <div class="lighting-row" id="tipLighting"></div>
-      <div class="pose-swiper" id="poseSwiper"></div>
-      <div class="pose-dots" id="poseDots"></div>
       <button class="take-photo" id="takePhotoBtn">Take Photo</button>
       <span class="rescan" id="rescanBtn">Scan again</span>
     </div>
@@ -372,7 +341,6 @@
       const tips = s === 'tips';
       $('gridOverlay').style.display = tips ? 'block' : 'none';
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
-      $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
       updateLensVisibility();
       if (s !== 'tips') resetCoaching();
@@ -380,7 +348,7 @@
 
     async function startCamera() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
         $('video').srcObject = stream;
         hasCamera = true;
         setCamState('idle');
@@ -411,8 +379,8 @@
     async function switchLens(lens) {
       if (lens === currentLens) return;
       const constraints = (lens === 'ultra' && ultraDeviceId)
-        ? { video: { deviceId: { exact: ultraDeviceId } }, audio: false }
-        : { video: { facingMode: { ideal: 'environment' } }, audio: false };
+        ? { video: { deviceId: { exact: ultraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }
+        : { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
       try {
         const ns = await navigator.mediaDevices.getUserMedia(constraints);
         if (stream) stream.getTracks().forEach(t => t.stop());
@@ -542,7 +510,7 @@
     function stopLive() {
       liveActive = false; if (liveRAF) cancelAnimationFrame(liveRAF); liveRAF = null;
       const cv = $('liveOverlay'); if (cv.width) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
-      $('peopleChip').classList.remove('show'); $('statusChip').classList.remove('show');
+      $('statusChip').classList.remove('show');
       resetCoaching();
     }
     function liveLoop() {
@@ -563,17 +531,7 @@
           if (++detErrors > 10) { detDisabled = true; lastDetections = []; lastCount = 0; }   // degrade gracefully
         }
       }
-      if (lastDetections.length) {
-        ctx.lineWidth = 3; ctx.strokeStyle = '#66bb6a'; ctx.fillStyle = 'rgba(102,187,106,0.10)';
-        for (const det of lastDetections) {
-          const b = det.boundingBox;
-          const x = tf.PX(b.originX / tf.vw), y = tf.PY(b.originY / tf.vh);
-          const w = tf.SX(b.width / tf.vw), h = tf.SY(b.height / tf.vh);
-          ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
-        }
-      }
-      $('peopleCount').textContent = lastCount;
-      $('peopleChip').classList.add('show');
+      // (person bounding boxes + counter removed; detection still powers coaching + "step into frame")
 
       // scene guards (~3×/sec)
       const now = performance.now();
@@ -656,12 +614,20 @@
       cv.getContext('2d').drawImage(v, 0, 0, w, h);
       return new Promise(r => cv.toBlob(b => r(b), 'image/jpeg', 0.7));
     }
-    function grabKeeperDataURL() {
+    async function grabKeeperDataURL() {
       const v = $('video'); if (!v.videoWidth) return null;
-      const [w, h] = scaledSize(v.videoWidth, v.videoHeight, 1440);
+      // full-sensor still via ImageCapture where supported (Android Chrome); else the full video frame
+      try {
+        const track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
+        if (track && window.ImageCapture) {
+          const blob = await new ImageCapture(track).takePhoto();
+          return await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+        }
+      } catch (e) { /* fall through to canvas capture */ }
+      const [w, h] = scaledSize(v.videoWidth, v.videoHeight, 2560);
       const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
       cv.getContext('2d').drawImage(v, 0, 0, w, h);
-      return cv.toDataURL('image/jpeg', 0.92);
+      return cv.toDataURL('image/jpeg', 0.95);
     }
     function loadCaptured(dataURL) { capturedImg = new Image(); capturedImg.src = dataURL; $('resultPhoto').src = dataURL; }
 
@@ -707,23 +673,11 @@
 
     function renderTips(r) {
       $('sceneBadgeTop').textContent = r.scene_type || 'Scene';
-      const q = r.lighting.quality;
-      const lcls = q === 'Good' ? 'badge-green' : q === 'Fair' ? 'badge-tan' : 'badge-muted';
-      const qMap = { Good: 'Good light', Fair: 'Fair light', Poor: 'Poor light' };
-      const tMap = { Warm: 'Warm tones', Cool: 'Cool tones', Neutral: 'Neutral tones' };
-      $('tipLighting').innerHTML =
-        '<span class="badge ' + lcls + '">' + (qMap[q] || esc(q)) + '</span>' +
-        '<span class="badge badge-tan">' + (tMap[r.lighting.tone] || esc(r.lighting.tone)) + '</span>' +
-        '<div class="lighting-tip">' + esc(r.lighting.tip || '') + '</div>';
-      const tips = r.pose_tips || [];
-      $('poseSwiper').innerHTML = tips.map((t, i) =>
-        '<div class="pose-item"><span class="pose-num">' + (i + 1) + '</span><span class="pose-text">' + esc(t) + '</span></div>').join('');
-      $('poseDots').innerHTML = tips.map((_, i) => '<span class="dot' + (i === 0 ? ' active' : '') + '"></span>').join('');
     }
 
     /* ── Stage 2: take the keeper photo → results ── */
-    function takePhoto() {
-      const dataURL = grabKeeperDataURL();
+    async function takePhoto() {
+      const dataURL = await grabKeeperDataURL();
       if (!dataURL) { toast('Camera not ready'); return; }
       loadCaptured(dataURL);
       stopLive();
@@ -806,7 +760,7 @@
           ctx.putImageData(id, 0, 0);
         }
         drawWatermark(ctx, cv.width, cv.height);
-        cv.toBlob(b => resolve(b), 'image/jpeg', 0.92);
+        cv.toBlob(b => resolve(b), 'image/jpeg', 0.95);
       });
     }
     async function shareOrSave(useShare) {
@@ -843,12 +797,6 @@
       finally { $('camLoading').classList.remove('active'); }
     });
 
-    /* ── Pose dots ── */
-    $('poseSwiper').addEventListener('scroll', () => {
-      const sw = $('poseSwiper'); const idx = Math.round(sw.scrollLeft / sw.clientWidth);
-      $('poseDots').querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === idx));
-    });
-
     /* ── Wire up ── */
     $('startBtn').addEventListener('click', startCamera);
     $('shutter').addEventListener('click', scanScene);
@@ -860,29 +808,39 @@
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); startLive(); } else { stopLive(); show('home'); } });
     $('gateScanAgain').addEventListener('click', closeGate);
 
-    /* ── Level slider (device tilt) ── */
-    if (window.DeviceOrientationEvent) {
-      const onLevel = (e) => {
-        const g = e.gamma; if (g == null) return;
+    /* ── Level slider: horizon roll from the gravity vector (pitch-independent) ── */
+    (function setupLevel() {
+      const onMotion = (e) => {
+        const a = e.accelerationIncludingGravity; if (!a) return;
+        const x = a.x || 0, y = a.y || 0;
         const d = $('camLevelDot'), v = $('camLevelVal'); if (!d || !v) return;
-        const p = Math.max(0, Math.min(100, ((g / 30) + 1) * 50));
-        const level = Math.abs(g) < 1;
+        // If the phone is near-flat (camera pointing up/down) there is no horizon to level to.
+        if (Math.hypot(x, y) < 3.5) {
+          d.style.left = '50%'; d.classList.remove('on'); v.classList.remove('on'); v.textContent = '—';
+          return;
+        }
+        // Roll about the viewing axis. Fold so "top-up & level" reads 0° regardless of the
+        // platform's gravity-sign convention (iOS vs Android).
+        let roll = Math.atan2(x, y) * 180 / Math.PI;
+        if (roll > 90) roll -= 180; else if (roll < -90) roll += 180;
+        const p = Math.max(0, Math.min(100, ((roll / 30) + 1) * 50));
+        const level = Math.abs(roll) < 2;
         d.style.left = p + '%';
         d.classList.toggle('on', level);
         v.classList.toggle('on', level);
-        v.textContent = Math.round(Math.abs(g)) + '°';
+        v.textContent = Math.round(Math.abs(roll)) + '°';
       };
-      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+: request motion permission on the same user gesture that starts the camera
+      const begin = () => window.addEventListener('devicemotion', onMotion);
+      const DME = window.DeviceMotionEvent;
+      if (DME && typeof DME.requestPermission === 'function') {
+        // iOS 13+: motion permission must be requested from a user gesture
         $('startBtn').addEventListener('click', () => {
-          DeviceOrientationEvent.requestPermission().then(r => {
-            if (r === 'granted') window.addEventListener('deviceorientation', onLevel);
-          }).catch(() => {});
+          DME.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
         });
-      } else {
-        window.addEventListener('deviceorientation', onLevel);
+      } else if (DME) {
+        begin();
       }
-    }
+    })();
   </script>
 </body>
 </html>
