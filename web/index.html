@@ -125,6 +125,12 @@
     .status-chip.show { display: inline-block; }
     .status-chip.warn { background: rgba(200,90,60,0.9); }
 
+    /* lens toggle (1× / 0.5×) */
+    .lens-toggle { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(150px + env(safe-area-inset-bottom)); z-index: 26; display: none; gap: 2px; background: rgba(0,0,0,0.45); border-radius: 100px; padding: 3px; }
+    .lens-toggle.show { display: flex; }
+    .lens-opt { color: rgba(255,255,255,0.7); font-size: 13px; padding: 5px 14px; border-radius: 100px; }
+    .lens-opt.active { background: rgba(255,255,255,0.92); color: #1a1a1a; }
+
     /* capture gate */
     .gate-block { position: absolute; inset: 0; z-index: 60; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 26px; background: rgba(20,18,16,0.92); padding: 40px; text-align: center; }
     .gate-block.show { display: flex; }
@@ -253,6 +259,12 @@
       <div class="shutter-hint">Point at an empty scene and tap</div>
     </div>
 
+    <!-- lens toggle (shown only if an ultra-wide camera exists) -->
+    <div class="lens-toggle" id="lensToggle">
+      <span class="lens-opt active" data-lens="wide">1×</span>
+      <span class="lens-opt" data-lens="ultra">0.5×</span>
+    </div>
+
     <!-- tips panel -->
     <div class="tip-panel" id="tipPanel">
       <div class="lighting-row" id="tipLighting"></div>
@@ -316,6 +328,7 @@
     let currentFilter = 'Vivid';
     let filterActive = false;
     let hasCamera = false;
+    let ultraDeviceId = null, currentLens = 'wide', ultraAvailable = false;
 
     const $ = (id) => document.getElementById(id);
     function show(id) {
@@ -340,6 +353,7 @@
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
       $('gridPrompt').style.display  = tips ? 'flex' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
+      updateLensVisibility();
     }
 
     async function startCamera() {
@@ -350,6 +364,7 @@
         setCamState('idle');
         show('camera');
         loadDetector();
+        detectLenses();
         startLive();
       } catch (e) {
         hasCamera = false;
@@ -357,6 +372,33 @@
         $('fileInput').click();
       }
     }
+
+    /* ── 1×/0.5× ultra-wide lens (feature-detected) ── */
+    function updateLensVisibility() { $('lensToggle').classList.toggle('show', ultraAvailable && $('camIdle').style.display === 'flex'); }
+    async function detectLenses() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const vids = devices.filter(d => d.kind === 'videoinput');
+        const ultra = vids.find(d => /ultra|0\.5/i.test(d.label) && /back|rear|environment/i.test(d.label))
+                   || vids.find(d => /ultra/i.test(d.label));
+        if (ultra) { ultraDeviceId = ultra.deviceId; ultraAvailable = true; }
+      } catch (e) { /* labels need camera permission — leave the toggle hidden */ }
+      updateLensVisibility();
+    }
+    async function switchLens(lens) {
+      if (lens === currentLens) return;
+      const constraints = (lens === 'ultra' && ultraDeviceId)
+        ? { video: { deviceId: { exact: ultraDeviceId } }, audio: false }
+        : { video: { facingMode: { ideal: 'environment' } }, audio: false };
+      try {
+        const ns = await navigator.mediaDevices.getUserMedia(constraints);
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        stream = ns; $('video').srcObject = ns; currentLens = lens;
+        document.querySelectorAll('.lens-opt').forEach(o => o.classList.toggle('active', o.dataset.lens === lens));
+        if (lens === 'ultra') toast('0.5× wide — keep your subject centred to avoid edge distortion');
+      } catch (e) { toast('Could not switch lens'); }
+    }
+    document.querySelectorAll('.lens-opt').forEach(o => o.addEventListener('click', () => switchLens(o.dataset.lens)));
 
     /* ── Live person detection (MediaPipe) + scene guards (histogram / blur / blocked) ── */
     let detector = null, detLoading = false;
