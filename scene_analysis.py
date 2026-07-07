@@ -29,6 +29,84 @@ VALID_FILTERS = ["Vivid", "Vivid Warm", "Vivid Cool", "Dramatic", "Dramatic Warm
 # Steadiness gate: variance-of-Laplacian below this reads as "too blurry to use". Tunable.
 BLUR_THRESHOLD = 45.0
 
+
+def _compute_placement(gray, saliency_map) -> dict:
+    """Where a standing subject should stand -> normalized {x, y}, top-left origin.
+
+    Fuses cheap signals — visual BALANCE (counterweight the scene's focal mass), background
+    CLEANLINESS (over the vertical band the body occupies), and LIGHT direction (stand on the
+    dimmer side so the light falls on the face) — each gated to only vote when it's reliable for
+    this scene, plus a hard BACKLIGHT VETO (never stand in front of a blown-out region, which
+    would silhouette the subject). x snaps to a rule-of-thirds line. Never raises; falls back
+    to {2/3, 2/3}.
+    """
+    FALLBACK = {"x": round(2 / 3, 3), "y": round(2 / 3, 3)}
+    try:
+        sal = np.asarray(saliency_map, dtype=np.float32)
+        g = np.asarray(gray, dtype=np.float32)
+        if sal.ndim != 2 or g.ndim != 2 or sal.size == 0:
+            return FALLBACK
+        H, W = sal.shape
+        X_LEFT, X_RIGHT = 1 / 3, 2 / 3
+
+        # Only trust a signal when it's meaningful for THIS scene (avoids deciding on noise).
+        saliency_reliable = sal.std() > 0.010 and (float(sal.max()) - float(sal.min())) > 0.05
+        light_reliable = float(g.mean()) > 40.0
+
+        votes = 0.0  # +ve -> right (2/3), -ve -> left (1/3)
+
+        if saliency_reliable:
+            # Balance: stand opposite the scene's horizontal focal centre of mass.
+            col = sal.sum(axis=0)
+            tot = float(col.sum())
+            cx = (float((np.arange(W) * col).sum() / tot) / W) if tot > 1e-6 else 0.5
+            votes += 1.0 if cx < 0.5 else -1.0
+            # Cleanliness: prefer the side whose body-band background is emptier.
+            top = int(H * 0.30)
+
+            def _clutter(nx):
+                c = int(nx * W)
+                return float(sal[top:, max(0, c - W // 6):min(W, c + W // 6)].mean())
+
+            votes += 1.0 if _clutter(X_RIGHT) < _clutter(X_LEFT) else -1.0
+
+        if light_reliable:
+            # Light: stand on the DIMMER side so the brighter side lights the face.
+            lb = float(g[:, :W // 2].mean())
+            rb = float(g[:, W // 2:].mean())
+            if abs(rb - lb) / (lb + rb + 1e-6) > 0.04:
+                votes += 1.2 if lb > rb else -1.2
+
+        # Backlight veto: a blown-out half silhouettes the subject -> forbid standing there.
+        hot = g > 245
+        lhot = float(hot[:, :W // 2].mean())
+        rhot = float(hot[:, W // 2:].mean())
+        HOT = 0.06
+        if rhot > HOT and rhot > lhot * 1.5:
+            right = False
+        elif lhot > HOT and lhot > rhot * 1.5:
+            right = True
+        elif votes > 0.15:
+            right = True
+        elif votes < -0.15:
+            right = False
+        else:
+            right = not (rhot > lhot)   # no confident signal: avoid the hotter half; tie -> right
+        x = X_RIGHT if right else X_LEFT
+
+        # Headroom: adapt y to where the saliency mass sits vertically.
+        y = 2 / 3
+        if saliency_reliable:
+            m = float(sal.mean()) + 1e-6
+            if float(sal[:H // 3].mean()) > 1.6 * m:
+                y = 0.70
+            elif float(sal[2 * H // 3:].mean()) > 1.8 * m:
+                y = 0.62
+        return {"x": round(float(x), 3), "y": round(min(0.72, max(0.60, y)), 3)}
+    except Exception:
+        return FALLBACK
+
+
 def _moderate_image(b64: str) -> bool:
     """Returns True if the image is safe, False if flagged. Defaults to safe on API error."""
     try:
@@ -112,10 +190,9 @@ def extract_features(image_path: str) -> dict:
         thirds_scores.append(float(np.mean(roi)))
     rule_of_thirds = max(thirds_scores) if thirds_scores else 0.0
 
-    # Suggested subject placement: of the two lower-third intersections (natural for a standing
-    # subject), pick the emptiest (lowest saliency = cleanest background). Returned normalized.
-    placement_x = (1.0 / 3.0) if thirds_scores[2] <= thirds_scores[3] else (2.0 / 3.0)
-    placement = {"x": round(placement_x, 3), "y": round(2.0 / 3.0, 3)}
+    # Suggested subject placement (normalized, top-left origin): balance / background cleanliness /
+    # light direction fused, with a backlight veto. See _compute_placement.
+    placement = _compute_placement(gray, saliency_map)
 
     left_weight = float(np.mean(saliency_map[:, :w // 2]))
     right_weight = float(np.mean(saliency_map[:, w // 2:]))
