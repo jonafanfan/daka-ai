@@ -67,7 +67,16 @@ def _analyze_with_gpt(b64: str) -> dict:
         }],
         max_completion_tokens=500,
     )
-    return json.loads(response.choices[0].message.content)
+    # A truncated, empty, or refused completion must degrade — not 500 the whole scan.
+    # analyze_scene reads every field via gpt.get(...), so {} falls back to safe defaults.
+    choice = response.choices[0] if response.choices else None
+    content = choice.message.content if (choice and choice.message) else None
+    if not content:
+        return {}
+    try:
+        return json.loads(content)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {}
 
 
 def extract_features(image_path: str) -> dict:
