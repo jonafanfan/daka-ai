@@ -26,8 +26,14 @@ def _encode_image(image_path: str) -> str:
 
 VALID_FILTERS = ["Vivid", "Vivid Warm", "Vivid Cool", "Dramatic", "Dramatic Warm", "Dramatic Cool", "Silvertone", "Noir"]
 
-# Steadiness gate: variance-of-Laplacian below this reads as "too blurry to use". Tunable.
-BLUR_THRESHOLD = 45.0
+# Blur gate (content-robust). Variance-of-Laplacian alone flags ANY low-texture scene
+# (plain wall, minimalist cafe) as blurry, which blocks the whole flow. Instead we judge the
+# SHARPNESS of the edges that actually exist, and give a near-featureless frame the benefit of
+# the doubt (nothing to be blurry -> pass). Defaults are lenient (over-rejecting is the worse
+# failure) and TUNABLE against real photos — /analyze echoes blur_var + edge_sharpness so you
+# can read real values and calibrate.
+MIN_EDGE_DENSITY = 0.008      # Canny edge fraction below which the scene is "too plain to judge"
+EDGE_SHARPNESS_MIN = 8.0      # mean |Laplacian| at edges below this = genuinely soft / blurred
 
 def _moderate_image(b64: str) -> bool:
     """Returns True if the image is safe, False if flagged. Defaults to safe on API error."""
@@ -83,8 +89,19 @@ def extract_features(image_path: str) -> dict:
     color_ratio = float(avg_color[0] / (avg_color[2] + 1e-5))
 
     edges = cv2.Canny(gray, 100, 200)
-    sharpness = float(np.sum(edges > 0) / (h * w + 1e-6))
-    blur_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())   # higher = sharper
+    sharpness = float(np.sum(edges > 0) / (h * w + 1e-6))     # Canny edge density
+
+    # Content-robust blur: judge whether the edges that DO exist are crisp; a near-featureless
+    # frame has nothing to be blurry -> not blurry. (blur_var kept as a diagnostic.)
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    blur_var = float(lap.var())
+    edge_mask = edges > 0
+    if sharpness < MIN_EDGE_DENSITY:
+        edge_sharpness = -1.0            # too plain to judge -> benefit of the doubt
+        blurry = False
+    else:
+        edge_sharpness = float(np.abs(lap[edge_mask]).mean())
+        blurry = edge_sharpness < EDGE_SHARPNESS_MIN
 
     saliency_engine = cv2.saliency.StaticSaliencySpectralResidual_create()
     _, saliency_map = saliency_engine.computeSaliency(img)
@@ -130,6 +147,8 @@ def extract_features(image_path: str) -> dict:
         "color_ratio": color_ratio,
         "sharpness": sharpness,
         "blur_var": blur_var,
+        "edge_sharpness": edge_sharpness,
+        "blurry": blurry,
         "rule_of_thirds": rule_of_thirds,
         "alignment": alignment,
         "balance": float(balance),
@@ -210,7 +229,9 @@ def analyze_scene(image_path: str) -> dict:
         "scene_type":   gpt.get("scene_type", "Unknown"),
         "blueprint":    build_blueprint(features),
         "lighting":     assess_lighting(features),
-        "blurry":       features["blur_var"] < BLUR_THRESHOLD,
+        "blurry":       features["blurry"],
+        "blur_var":     round(features["blur_var"], 1),          # diagnostic — for tuning the gate
+        "edge_sharpness": round(features["edge_sharpness"], 2),  # diagnostic — for tuning the gate
         "composition":  assess_composition(features),
         "placement":    features["placement"],
         "pose_tips":    gpt.get("pose_tips", []),
