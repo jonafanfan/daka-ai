@@ -121,8 +121,24 @@
       pointer-events: none; white-space: nowrap;
     }
     .coach-cue.show { display: flex; }
-    #coachArrow { font-size: 20px; color: #fff; min-width: 22px; text-align: center; line-height: 1; }
-    #coachText { font-size: 14px; color: #fff; font-weight: 500; }
+    #coachText { font-size: 15px; color: #fff; font-weight: 600; }
+
+    /* big animated movement arrow */
+    .move-arrow { position: absolute; top: 44%; left: 50%; z-index: 27; pointer-events: none; display: none; font-size: 90px; line-height: 1; color: #fff; text-shadow: 0 3px 18px rgba(0,0,0,0.7); will-change: transform, opacity; }
+    .move-arrow.show { display: block; }
+    .move-arrow.dir-right { animation: glideR 1.1s ease-in-out infinite; }
+    .move-arrow.dir-left  { animation: glideL 1.1s ease-in-out infinite; }
+    .move-arrow.dir-up    { animation: glideU 1.1s ease-in-out infinite; }
+    .move-arrow.dir-down  { animation: glideD 1.1s ease-in-out infinite; }
+    @keyframes glideR { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(calc(-50% + 46px),-50%); opacity:1; } }
+    @keyframes glideL { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(calc(-50% - 46px),-50%); opacity:1; } }
+    @keyframes glideU { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(-50%,calc(-50% - 46px)); opacity:1; } }
+    @keyframes glideD { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(-50%,calc(-50% + 46px)); opacity:1; } }
+
+    /* full-screen pulsing edge cue */
+    #edgePulse { position: absolute; inset: 0; z-index: 22; pointer-events: none; display: none; }
+    #edgePulse.show { display: block; animation: edgePulseAnim 1.1s ease-in-out infinite; }
+    @keyframes edgePulseAnim { 0%,100% { box-shadow: inset 0 0 45px 8px rgba(230,126,34,0.15); } 50% { box-shadow: inset 0 0 95px 22px rgba(230,126,34,0.55); } }
 
     .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
     .status-chip.show { display: inline-block; }
@@ -220,8 +236,9 @@
   <section id="camera" class="screen">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="liveOverlay"></canvas>
+    <div id="edgePulse"></div>
+    <div id="moveArrow" class="move-arrow"></div>
     <div id="coachCue" class="coach-cue">
-      <span id="coachArrow"></span>
       <span id="coachText">Step into frame</span>
     </div>
 
@@ -335,6 +352,7 @@
     let lastPoseTime = 0;
     let lastPoseLM = null;
     let smPx = null, smPy = null;  // smoothed subject position
+    let curTilt = 90, curPitch = 0;  // live phone tilt (deg from vertical) + pitch (aim up/down)
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -344,6 +362,7 @@
       $('gridOverlay').style.display = tips ? 'block' : 'none';
       $('sceneBadgeTop').style.display = tips ? 'block' : 'none';
       $('tipPanel').style.display    = tips ? 'block' : 'none';
+      $('camLevel').style.display    = tips ? 'flex' : 'none';   // no level/tilt on the initial scan
       updateLensVisibility();
       if (s !== 'tips') resetCoaching();
     }
@@ -423,13 +442,17 @@
 
     /* ── Coaching helpers ── */
     function setCue(text, arrow) {
-      const el = $('coachCue');
-      if (!text) { el.classList.remove('show'); return; }
+      const el = $('coachCue'), ma = $('moveArrow'), ep = $('edgePulse');
+      if (!text) { el.classList.remove('show'); ma.className = 'move-arrow'; ep.classList.remove('show'); return; }
       $('coachText').textContent = text;
-      const a = $('coachArrow');
-      a.textContent = arrow ? { left: '←', right: '→', up: '↑', down: '↓' }[arrow] || '' : '';
-      a.style.display = arrow ? 'inline' : 'none';
       el.classList.add('show');
+      if (arrow) {
+        ma.textContent = { left: '◀', right: '▶', up: '▲', down: '▼' }[arrow] || '';
+        ma.className = 'move-arrow show dir-' + arrow;   // big glide animation + direction
+        ep.classList.add('show');                        // full-screen pulse to prompt movement
+      } else {
+        ma.className = 'move-arrow'; ep.classList.remove('show');
+      }
     }
 
     function drawFootprint(tf, ctx, target, green) {
@@ -557,8 +580,11 @@
         if (cx == null) {
           setCue('Step into frame', null);
         } else if (!inZone) {
-          const dir = cx < targetPos.x ? 'right' : 'left';
-          setCue(dir === 'right' ? 'Move right' : 'Move left', dir);
+          const dir = cx < targetPos.x ? 'right' : 'left';   // screen-frame; arrow shows the way
+          setCue('Subject: move ' + dir, dir);               // explicitly the SUBJECT, not the camera
+        } else if (Math.abs(curPitch) > 12) {
+          const tdir = curPitch < 0 ? 'down' : 'up';          // sign may flip per device — see notes
+          setCue('Tilt phone ' + tdir, tdir);                 // camera action, not the subject
         } else if (lastPoseLM && lastPoseLM.length >= 13) {
           const facing = detectFacing(lastPoseLM);
           if (facing === 'left') {
@@ -790,10 +816,12 @@
         // Pitching (aim up/down) OR rolling (lean left/right) raises it; yawing (rotating while
         // staying upright) leaves it at 0. |y| makes it sign-agnostic across iOS/Android.
         const tilt = Math.acos(Math.min(1, Math.abs(y) / g)) * 180 / Math.PI;
-        // horizontal lean (roll) drives the dot; pitching keeps the dot centred but un-green
+        // decompose into roll (horizon lean, drives the dot) and pitch (aim up/down, drives tilt cues)
         const lean = Math.atan2(x, Math.abs(y)) * 180 / Math.PI;
+        const pitch = Math.atan2(z, Math.hypot(x, y)) * 180 / Math.PI;   // 0 = phone vertical
+        curTilt = tilt; curPitch = pitch;
         const p = Math.max(0, Math.min(100, ((lean / 30) + 1) * 50));
-        const upright = tilt < 3;
+        const upright = tilt < 3;                                        // green anywhere in 0–3°
         d.style.left = p + '%';
         d.classList.toggle('on', upright);
         v.classList.toggle('on', upright);
