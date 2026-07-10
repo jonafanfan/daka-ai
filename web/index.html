@@ -123,22 +123,14 @@
     .coach-cue.show { display: flex; }
     #coachText { font-size: 15px; color: #fff; font-weight: 600; }
 
-    /* big animated movement arrow */
-    .move-arrow { position: absolute; top: 44%; left: 50%; z-index: 27; pointer-events: none; display: none; font-size: 90px; line-height: 1; color: #fff; text-shadow: 0 3px 18px rgba(0,0,0,0.7); will-change: transform, opacity; }
-    .move-arrow.show { display: block; }
-    .move-arrow.dir-right { animation: glideR 1.1s ease-in-out infinite; }
-    .move-arrow.dir-left  { animation: glideL 1.1s ease-in-out infinite; }
-    .move-arrow.dir-up    { animation: glideU 1.1s ease-in-out infinite; }
-    .move-arrow.dir-down  { animation: glideD 1.1s ease-in-out infinite; }
-    @keyframes glideR { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(calc(-50% + 46px),-50%); opacity:1; } }
-    @keyframes glideL { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(calc(-50% - 46px),-50%); opacity:1; } }
-    @keyframes glideU { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(-50%,calc(-50% - 46px)); opacity:1; } }
-    @keyframes glideD { 0%,100% { transform: translate(-50%,-50%); opacity:.5; } 50% { transform: translate(-50%,calc(-50% + 46px)); opacity:1; } }
-
-    /* full-screen pulsing edge cue */
+    /* directional pulsing edge cue — the edge you should move toward glows */
     #edgePulse { position: absolute; inset: 0; z-index: 22; pointer-events: none; display: none; }
-    #edgePulse.show { display: block; animation: edgePulseAnim 1.1s ease-in-out infinite; }
-    @keyframes edgePulseAnim { 0%,100% { box-shadow: inset 0 0 45px 8px rgba(230,126,34,0.15); } 50% { box-shadow: inset 0 0 95px 22px rgba(230,126,34,0.55); } }
+    #edgePulse.show { display: block; animation: edgePulseAnim 1.0s ease-in-out infinite; }
+    #edgePulse.dir-right { background: linear-gradient(to left,   rgba(230,126,34,0.65), transparent 34%); }
+    #edgePulse.dir-left  { background: linear-gradient(to right,  rgba(230,126,34,0.65), transparent 34%); }
+    #edgePulse.dir-up    { background: linear-gradient(to bottom, rgba(230,126,34,0.65), transparent 34%); }
+    #edgePulse.dir-down  { background: linear-gradient(to top,    rgba(230,126,34,0.65), transparent 34%); }
+    @keyframes edgePulseAnim { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
 
     .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
     .status-chip.show { display: inline-block; }
@@ -237,7 +229,6 @@
     <video id="video" autoplay playsinline muted></video>
     <canvas id="liveOverlay"></canvas>
     <div id="edgePulse"></div>
-    <div id="moveArrow" class="move-arrow"></div>
     <div id="coachCue" class="coach-cue">
       <span id="coachText">Step into frame</span>
     </div>
@@ -353,6 +344,7 @@
     let lastPoseLM = null;
     let smPx = null, smPy = null;  // smoothed subject position
     let curTilt = 90, curPitch = 0;  // live phone tilt (deg from vertical) + pitch (aim up/down)
+    let zoned = false;               // hysteretic "subject is in the box" latch
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -442,17 +434,12 @@
 
     /* ── Coaching helpers ── */
     function setCue(text, arrow) {
-      const el = $('coachCue'), ma = $('moveArrow'), ep = $('edgePulse');
-      if (!text) { el.classList.remove('show'); ma.className = 'move-arrow'; ep.classList.remove('show'); return; }
+      const el = $('coachCue'), ep = $('edgePulse');
+      if (!text) { el.classList.remove('show'); ep.className = ''; return; }
       $('coachText').textContent = text;
       el.classList.add('show');
-      if (arrow) {
-        ma.textContent = { left: '◀', right: '▶', up: '▲', down: '▼' }[arrow] || '';
-        ma.className = 'move-arrow show dir-' + arrow;   // big glide animation + direction
-        ep.classList.add('show');                        // full-screen pulse to prompt movement
-      } else {
-        ma.className = 'move-arrow'; ep.classList.remove('show');
-      }
+      // directional edge glow only (no in-your-face arrow): the edge you move toward pulses
+      ep.className = arrow ? ('show dir-' + arrow) : '';
     }
 
     function drawFootprint(tf, ctx, target, green) {
@@ -511,7 +498,7 @@
     function startLive() { if (liveActive) return; liveActive = true; lastVT = -1; liveLoop(); }
     function resetCoaching() {
       coachingActive = false; targetPos = null; lastPoseLM = null; lastPoseTime = 0;
-      smPx = null; smPy = null;
+      smPx = null; smPy = null; zoned = false;
       setCue(null, null);
     }
     function stopLive() {
@@ -571,9 +558,15 @@
         } else { smPx = smPy = null; }
 
         const cx = smPx, cy = smPy;
-        const inZone = cx != null &&
-          Math.abs(cx - targetPos.x) < 0.10 &&
-          Math.abs(cy - targetPos.y) < 0.12;
+        // hysteresis: enter the box at a tight deadband, only leave once well outside — so tiny
+        // jitter near the edge can't flip-flop the "move" cue once the subject is in position
+        if (cx == null) {
+          zoned = false;
+        } else {
+          const dx = Math.abs(cx - targetPos.x), dy = Math.abs(cy - targetPos.y);
+          zoned = zoned ? (dx < 0.18 && dy < 0.20) : (dx < 0.10 && dy < 0.12);
+        }
+        const inZone = zoned;
         drawFootprint(tf, ctx, targetPos, inZone);
 
         // arrow/text point where the subject must move ON SCREEN to reach the marker
@@ -587,10 +580,8 @@
           setCue('Tilt phone ' + tdir, tdir);                 // camera action, not the subject
         } else if (lastPoseLM && lastPoseLM.length >= 13) {
           const facing = detectFacing(lastPoseLM);
-          if (facing === 'left') {
-            setCue('Turn to face the camera \u2192', 'right');
-          } else if (facing === 'right') {
-            setCue('Turn to face the camera \u2190', 'left');
+          if (facing !== 'forward') {
+            setCue('Subject: turn to face the camera', null);
           } else {
             setCue('Perfect — take the photo!', null);
           }
