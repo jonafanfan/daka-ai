@@ -4,12 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>打卡吧！</title>
+  <meta name="theme-color" content="#F6F1E9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#14110D" media="(prefers-color-scheme: dark)" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet" />
   <style>
     /* ─── Warm Film palette ─── */
     :root {
+      color-scheme: light dark;
       --bg: #F6F1E9;
       --surface: #ECE3D5;
       --text: #2B2620;
@@ -18,6 +21,25 @@
       --accent-tint: #F4E4D9;
       --tan: #C9A24B;
       --tan-tint: #FBF1E4;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.05);
+    }
+
+    /* Dark counterpart — warm near-blacks, not neutral greys, so the "Warm Film" identity
+       survives the flip. Only Home and Results theme: the camera screen and its overlays are
+       deliberately hardcoded dark (a viewfinder must never go light behind a live preview).
+       --accent is intentionally IDENTICAL in both themes: it is used as a button BACKGROUND
+       under white text, so brightening it for dark mode would drop that pair to ~2.7:1.
+       Left as-is it stays 3.3:1, and reads 5.6:1 as text on the dark bg. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14110D;
+        --surface: #201B15;
+        --text: #F2ECE1;
+        --text2: #A0937E;
+        --accent-tint: #2E2018;
+        --tan-tint: #2A2117;
+        --card-shadow: 0 2px 14px rgba(0,0,0,0.45);
+      }
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -177,7 +199,7 @@
     .filter-btn.active { background: rgba(197,122,82,0.92); }
 
     .cards { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-    .card { background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+    .card { background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: var(--card-shadow); }
     .card-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
     .card-title .ch { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10px; }
     .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
