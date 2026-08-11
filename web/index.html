@@ -4,12 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>打卡吧！</title>
+  <meta name="theme-color" content="#F6F1E9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#14110D" media="(prefers-color-scheme: dark)" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet" />
   <style>
     /* ─── Warm Film palette ─── */
     :root {
+      color-scheme: light dark;
       --bg: #F6F1E9;
       --surface: #ECE3D5;
       --text: #2B2620;
@@ -18,6 +21,25 @@
       --accent-tint: #F4E4D9;
       --tan: #C9A24B;
       --tan-tint: #FBF1E4;
+      --card-shadow: 0 2px 12px rgba(0,0,0,0.05);
+    }
+
+    /* Dark counterpart — warm near-blacks, not neutral greys, so the "Warm Film" identity
+       survives the flip. Only Home and Results theme: the camera screen and its overlays are
+       deliberately hardcoded dark (a viewfinder must never go light behind a live preview).
+       --accent is intentionally IDENTICAL in both themes: it is used as a button BACKGROUND
+       under white text, so brightening it for dark mode would drop that pair to ~2.7:1.
+       Left as-is it stays 3.3:1, and reads 5.6:1 as text on the dark bg. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14110D;
+        --surface: #201B15;
+        --text: #F2ECE1;
+        --text2: #A0937E;
+        --accent-tint: #2E2018;
+        --tan-tint: #2A2117;
+        --card-shadow: 0 2px 14px rgba(0,0,0,0.45);
+      }
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -177,7 +199,7 @@
     .filter-btn.active { background: rgba(197,122,82,0.92); }
 
     .cards { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-    .card { background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+    .card { background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: var(--card-shadow); }
     .card-title { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
     .card-title .ch { text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10px; }
     .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -230,7 +252,7 @@
     <canvas id="liveOverlay"></canvas>
     <div id="edgePulse"></div>
     <div id="coachCue" class="coach-cue">
-      <span id="coachText">Step into frame</span>
+      <span id="coachText">Align the dots</span>
     </div>
 
     <div class="status-chip" id="statusChip"></div>
@@ -336,15 +358,28 @@
     function scaledSize(w, h, cap) { const m = Math.max(w, h); if (m <= cap) return [w, h]; const r = cap / m; return [Math.round(w*r), Math.round(h*r)]; }
     function errMsg(e) { return e.name === 'AbortError' ? 'Server took too long — it may be waking up. Try again.' : (e.message || 'Analysis failed'); }
 
-    /* ── Coaching state ── */
+    /* ── Coaching state: two-dot camera aim alignment ── */
     let coachingActive = false;
-    let targetPos = null;          // {x, y} from analysis.placement
-    let coachPoseMs = 0;
-    let lastPoseTime = 0;
-    let lastPoseLM = null;
-    let smPx = null, smPy = null;  // smoothed subject position
-    let curTilt = 90, curPitch = 0;  // live phone tilt (deg from vertical) + pitch (aim up/down)
-    let zoned = false;               // hysteretic "subject is in the box" latch
+    let targetPos = null;          // {x, y} from analysis.placement — AI's ideal frame-centre point
+    let scanOrient = null;         // {alpha, beta} device orientation captured as the aim baseline
+    let aimZoned = false;          // hysteretic "dots are aligned" latch
+    let curTilt = 90, curPitch = 0;  // live phone tilt (deg from vertical) + pitch — drives the level slider
+
+    // Live device orientation (yaw/pitch), used to slide the target dot as you pan the phone.
+    let liveOrient = { alpha: null, beta: null };
+    function angleDelta(a, b) { return ((a - b + 540) % 360) - 180; }  // shortest signed delta, handles 0/360 wrap
+
+    // Assumed camera field-of-view in degrees — a sensitivity scalar for how far the target dot
+    // slides per degree panned; doesn't need to be optically exact, just to feel 1:1 with the scene.
+    // Lower it to make the dot more sensitive to a given pan.
+    const AIM_FOV_H = 62, AIM_FOV_V = 42;
+    // Signs follow the W3C spec: alpha grows counter-clockwise (pan LEFT), and panning left makes
+    // the scene appear to slide RIGHT, so yaw is +1. beta grows as the rear camera aims UP, which
+    // slides the scene DOWN (y is down-positive), so pitch is +1 too.
+    // NOTE: alpha is inconsistent in the wild — some builds report a clockwise-positive compass
+    // heading instead. If the dot chases the wrong way on a real phone, flip AIM_YAW_SIGN to -1.
+    const AIM_YAW_SIGN = 1, AIM_PITCH_SIGN = 1;
+    const AIM_DEADBAND_IN = 0.05, AIM_DEADBAND_OUT = 0.09;
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -366,7 +401,6 @@
         hasCamera = true;
         setCamState('idle');
         show('camera');
-        loadPoseLandmarker();
         detectLenses();
         startLive();
       } catch (e) {
@@ -403,34 +437,10 @@
     }
     document.querySelectorAll('.lens-opt').forEach(o => o.addEventListener('click', () => switchLens(o.dataset.lens)));
 
-    /* ── Live person detection (MediaPipe) + scene guards (histogram / blur / blocked) ── */
+    /* ── Live scene guards (histogram / blur / blocked) ── */
     let liveActive = false, liveRAF = null, lastVT = -1;
     let refHist = null, sceneScanned = false, lastCheck = 0;
     const _fs = document.createElement('canvas'); _fs.width = 64; _fs.height = 64;
-
-    /* ── PoseLandmarker (person presence, position + facing) ── */
-    let poseLandmarker = null, poseLoading = false;
-    async function loadPoseLandmarker() {
-      if (poseLandmarker || poseLoading) return;
-      poseLoading = true;
-      try {
-        const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
-        const fileset = await vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
-        const model = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
-        try {
-          poseLandmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
-            baseOptions: { modelAssetPath: model, delegate: 'GPU' },
-            runningMode: 'VIDEO', numPoses: 1,
-          });
-        } catch (e) {
-          poseLandmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
-            baseOptions: { modelAssetPath: model, delegate: 'CPU' },
-            runningMode: 'VIDEO', numPoses: 1,
-          });
-        }
-      } catch (e) { /* PoseLandmarker unavailable — facing guidance skipped */ }
-      finally { poseLoading = false; }
-    }
 
     /* ── Coaching helpers ── */
     function setCue(text, arrow) {
@@ -442,34 +452,27 @@
       ep.className = arrow ? ('show dir-' + arrow) : '';
     }
 
-    function drawFootprint(tf, ctx, target, green) {
-      const fx = tf.PX(target.x), fy = tf.PY(target.y);
-      const rw = tf.SX(0.09), rh = tf.SY(0.028);
-      const col = green ? '#66bb6a' : '#C57A52';
+    // Two-dot aim alignment: a fixed dot at screen-centre (where the camera actually points) and
+    // a dot at the AI's ideal centre-of-frame point, joined by a line. Pan the phone until they
+    // overlap — the target dot turns green (see AIM_DEADBAND_* above).
+    function drawAimDots(tf, ctx, nx, ny, green) {
+      const cx = tf.PX(0.5), cy = tf.PY(0.5);
+      const tx = tf.PX(nx), ty = tf.PY(ny);
       ctx.save();
-      ctx.strokeStyle = col; ctx.lineWidth = 3;
-      ctx.fillStyle = green ? 'rgba(102,187,106,0.22)' : 'rgba(197,122,82,0.18)';
-      ctx.beginPath(); ctx.ellipse(fx, fy, rw, rh, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      const boxH = tf.SY(0.6), hw = rw * 0.9;
-      ctx.setLineDash([7, 7]); ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(fx - hw, fy); ctx.lineTo(fx - hw, fy - boxH);
-      ctx.moveTo(fx + hw, fy); ctx.lineTo(fx + hw, fy - boxH);
-      ctx.moveTo(fx - hw, fy - boxH); ctx.lineTo(fx + hw, fy - boxH);
-      ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = green ? 'rgba(102,187,106,0.75)' : 'rgba(255,255,255,0.5)';
+      ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.setLineDash([]);
+      // centre dot — where the camera is actually pointed (always screen-centre)
+      ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2; ctx.stroke();
+      // target dot — where the AI wants the centre to be
+      ctx.beginPath(); ctx.arc(tx, ty, 11, 0, Math.PI * 2);
+      ctx.fillStyle = green ? 'rgba(102,187,106,0.9)' : 'rgba(197,122,82,0.9)';
+      ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.restore();
-    }
-
-    function detectFacing(landmarks) {
-      const ls = landmarks[11], rs = landmarks[12];  // left/right shoulder
-      const nose = landmarks[0];
-      if (!ls || !rs || !nose) return null;
-      const midX = (ls.x + rs.x) / 2;
-      const noseOffset = nose.x - midX;               // +ve = nose right of shoulder midpoint
-      const zDiff = rs.z - ls.z;                       // +ve = right shoulder further → facing left
-      const facingScore = noseOffset * 0.5 + zDiff * 2;
-      if (Math.abs(facingScore) < 0.06) return 'forward';
-      return facingScore > 0 ? 'right' : 'left';
     }
 
     function coverTF(video, canvas) {
@@ -497,8 +500,7 @@
 
     function startLive() { if (liveActive) return; liveActive = true; lastVT = -1; liveLoop(); }
     function resetCoaching() {
-      coachingActive = false; targetPos = null; lastPoseLM = null; lastPoseTime = 0;
-      smPx = null; smPy = null; zoned = false;
+      coachingActive = false; targetPos = null; scanOrient = null; aimZoned = false;
       setCue(null, null);
     }
     function stopLive() {
@@ -527,67 +529,36 @@
         else s.classList.remove('show');
       }
 
-      // ── coaching overlay (stand here + face direction) ──
+      // ── coaching overlay: two-dot aim alignment ──
       if (coachingActive && targetPos) {
-        // run PoseLandmarker every ~3 frames for facing detection
-        if (poseLandmarker && video.readyState >= 2 && video.currentTime !== coachPoseMs) {
-          coachPoseMs = video.currentTime;
-          try {
-            const res = poseLandmarker.detectForVideo(video, Math.round(performance.now()));
-            if (res && res.landmarks && res.landmarks.length) {
-              lastPoseLM = res.landmarks[0];
-              lastPoseTime = performance.now();
-            }
-          } catch (e) { /* skip */ }
-        }
+        // lock the aim baseline to whatever orientation reading is available on the first frame
+        // after a scan (covers the case where the event hasn't fired yet at scan time)
+        if (!scanOrient && liveOrient.alpha != null) scanOrient = { alpha: liveOrient.alpha, beta: liveOrient.beta };
 
-        // clear stale pose landmarks (person walked away)
-        if (lastPoseTime && performance.now() - lastPoseTime > 800) lastPoseLM = null;
-
-        // person's ground position from the hip midpoint (PoseLandmarker only — a real body pose,
-        // so lamps/tables/etc. are never mistaken for a subject)
-        let px = null, py = null;
-        if (lastPoseLM && lastPoseLM.length >= 25) {
-          px = (lastPoseLM[23].x + lastPoseLM[24].x) / 2;
-          py = (lastPoseLM[23].y + lastPoseLM[24].y) / 2;
+        let nx = targetPos.x, ny = targetPos.y;
+        if (scanOrient && liveOrient.alpha != null) {
+          const dYaw = angleDelta(liveOrient.alpha, scanOrient.alpha);
+          const dPitch = liveOrient.beta - scanOrient.beta;
+          nx = targetPos.x + AIM_YAW_SIGN * (dYaw / AIM_FOV_H);
+          ny = targetPos.y + AIM_PITCH_SIGN * (dPitch / AIM_FOV_V);
         }
-        // smooth to kill per-frame jitter so the cue tracks real movement
-        if (px != null) {
-          smPx = (smPx == null) ? px : smPx + (px - smPx) * 0.35;
-          smPy = (smPy == null) ? py : smPy + (py - smPy) * 0.35;
-        } else { smPx = smPy = null; }
+        const cnx = Math.max(-0.3, Math.min(1.3, nx));
+        const cny = Math.max(-0.3, Math.min(1.3, ny));
 
-        const cx = smPx, cy = smPy;
-        // hysteresis: enter the box at a tight deadband, only leave once well outside — so tiny
-        // jitter near the edge can't flip-flop the "move" cue once the subject is in position
-        if (cx == null) {
-          zoned = false;
-        } else {
-          const dx = Math.abs(cx - targetPos.x), dy = Math.abs(cy - targetPos.y);
-          zoned = zoned ? (dx < 0.18 && dy < 0.20) : (dx < 0.10 && dy < 0.12);
-        }
-        const inZone = zoned;
-        drawFootprint(tf, ctx, targetPos, inZone);
+        // hysteresis: enter the deadband tight, only leave once well outside — kills flicker
+        const dist = Math.hypot(cnx - 0.5, cny - 0.5);
+        aimZoned = aimZoned ? dist < AIM_DEADBAND_OUT : dist < AIM_DEADBAND_IN;
 
-        // arrow/text point where the subject must move ON SCREEN to reach the marker
-        if (cx == null) {
-          setCue('Step into frame', null);
-        } else if (!inZone) {
-          const dir = cx < targetPos.x ? 'right' : 'left';   // screen-frame; arrow shows the way
-          setCue('Subject: move ' + dir, dir);               // explicitly the SUBJECT, not the camera
-        } else if (Math.abs(curPitch) > 12) {
-          const tdir = curPitch < 0 ? 'down' : 'up';          // sign may flip per device — see notes
-          setCue('Tilt phone ' + tdir, tdir);                 // camera action, not the subject
-        } else if (lastPoseLM && lastPoseLM.length >= 13) {
-          const facing = detectFacing(lastPoseLM);
-          if (facing !== 'forward') {
-            setCue('Subject: turn to face the camera', null);
-          } else {
-            setCue('Perfect — take the photo!', null);
-          }
-        } else {
-          setCue('Good position — face the camera', null);
-        }
+        drawAimDots(tf, ctx, cnx, cny, aimZoned);
+
+        // target dot pushed off-frame → pulse the edge to pan toward
+        const offX = cnx < 0.06 ? 'left' : cnx > 0.94 ? 'right' : null;
+        const offY = cny < 0.06 ? 'up' : cny > 0.94 ? 'down' : null;
+
+        if (aimZoned) setCue('Perfect — take the photo!', null);
+        else if (offX) setCue('Pan camera ' + offX, offX);
+        else if (offY) setCue('Pan camera ' + offY, offY);
+        else setCue('Align the dots', null);
       }
     }
 
@@ -645,13 +616,14 @@
         if (analysisResult.blurry) { openGate('That shot was blurry — hold steady, then scan again.'); return; }
         refHist = frameStats($('video')).hist; sceneScanned = true;   // reference of the empty scene
         renderTips(analysisResult);
-        // set "stand here" target from server placement, fallback to default rule-of-thirds
+        // AI's ideal frame-centre point, fallback to default rule-of-thirds
         targetPos = (analysisResult.placement && analysisResult.placement.x && analysisResult.placement.y)
           ? { x: analysisResult.placement.x, y: analysisResult.placement.y }
           : { x: 1/3, y: 2/3 };
+        scanOrient = null; aimZoned = false;   // fresh aim baseline for this scan
         coachingActive = true;
         $('coachCue').classList.add('show');
-        setCue('Step into frame', null);
+        setCue('Align the dots', null);
         setCamState('tips');
       } catch (e) {
         setCamState('idle');
@@ -826,6 +798,24 @@
           DME.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
         });
       } else if (DME) {
+        begin();
+      }
+    })();
+
+    /* ── Aim-orientation listener: yaw (alpha) + pitch (beta) feed the two-dot aim overlay ── */
+    (function setupAimOrientation() {
+      const onOrient = (e) => {
+        if (e.alpha == null || e.beta == null) return;
+        liveOrient.alpha = e.alpha; liveOrient.beta = e.beta;
+      };
+      const begin = () => window.addEventListener('deviceorientation', onOrient);
+      const DOE = window.DeviceOrientationEvent;
+      if (DOE && typeof DOE.requestPermission === 'function') {
+        // iOS 13+: orientation permission must be requested from a user gesture
+        $('startBtn').addEventListener('click', () => {
+          DOE.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
+        });
+      } else if (DOE) {
         begin();
       }
     })();
