@@ -1,0 +1,10 @@
+# Test-only dependencies. Kept out of requirements.txt so the Render build stays lean —
+# it installs requirements.txt only.
+#
+#   python -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements.txt -r requirements-dev.txt   # Windows
+#   .venv/bin/python     -m pip install -r requirements.txt -r requirements-dev.txt   # macOS/Linux
+#   .venv/Scripts/python -m pytest
+
+pytest>=8.0.0
+httpx>=0.27.0          # required by fastapi.testclient.TestClient
