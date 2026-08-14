@@ -1,6 +1,16 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.9` (shipped)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.10` (shipped)
+
+> **Recent changes**
+>
+> - **`0.10` — `pose_tips` removed (breaking).** The product thesis narrowed: subject positioning,
+>   framing and basic colour grading are what make the photo, and the subject poses how they want
+>   to. The field is gone from both the vision prompt and the response, which also removes the only
+>   part of the model output nobody consumed. **Exception to the additive rule below**, taken
+>   knowingly: the sole consumer never read the field, so nothing breaks. Anyone who *was* reading
+>   it should treat a missing key as `[]`.
+> - **`0.10` — `lighting.tone` inversion fixed.** Values recorded before this are inverted. See §3.2.
 
 This document describes the JSON that `POST /analyze` **actually returns today**, as implemented in
 [`scene_analysis.py`](scene_analysis.py) and served by [`api_server.py`](api_server.py). Section 6
@@ -10,8 +20,8 @@ proposal, not a promise.
 > **History.** Earlier revisions of this file specified a `1.0` shape (`framing`, `objects`,
 > `framing_suggestions`, `scene_yap`, `contract_version`, `coord_space`) that the engine never
 > emitted, while omitting fields it does emit (`placement`, `blurry`, `blur_var`,
-> `edge_sharpness`). It has been rewritten to match reality. Version is `0.9` to make clear that
-> the `1.0` name is still unclaimed.
+> `edge_sharpness`). It has been rewritten to match reality. The version stays below `1.0` to make
+> clear that the `1.0` name is still unclaimed.
 
 > **Golden rule — every change is additive.** Never rename, remove, or change the type of an
 > existing field. New fields default to `[]`, `""`, or `null` so an older client keeps working.
@@ -64,10 +74,6 @@ Every field below is always present on a `200`. There are no optional keys.
   "edge_sharpness": 21.47,      // diagnostic — for tuning the blur gate
 
   "placement":      { "x": 0.667, "y": 0.667 },
-
-  "pose_tips":      ["Lean against the window frame on the left",
-                     "Angle your shoulders toward the soft window light",
-                     "Hold the coffee cup low, hands relaxed"],
 
   "hashtags":       ["#cafevibes", "#coffeetime", "#goldenhour"],
 
@@ -156,9 +162,9 @@ Derived from measured features, not from the model — reliable. Currently **unu
 
 Currently **unused by the UI**.
 
-### 3.6 `scene_type`, `pose_tips`, `hashtags`, `filter` — the model's output
+### 3.6 `scene_type`, `hashtags`, `filter` — the model's output
 
-All four come from a single vision call in
+All three come from a single vision call in
 [`_analyze_with_gpt`](scene_analysis.py#L128-L163), and all four **degrade rather than fail**: a
 truncated, empty, refused, or unparseable completion yields `{}`, and each field falls back to its
 default rather than 500ing the scan.
@@ -166,7 +172,6 @@ default rather than 500ing the scan.
 | Field | Type | Fallback | Notes |
 |---|---|---|---|
 | `scene_type` | string | `"Unknown"` | concise name, e.g. `"Café"`, `"City Street"`, `"Temple"` |
-| `pose_tips` | string[] | `[]` | asked for exactly 3, scene-specific. **Generated but unused by the UI** |
 | `hashtags` | string[] | `[]` | asked for exactly 3, lowercase, with `#` |
 | `filter` | enum | `"Vivid"` | **server-validated** against the list below; anything else becomes `"Vivid"` |
 
@@ -178,28 +183,49 @@ Dramatic  Dramatic Warm  Dramatic Cool
 Silvertone  Noir
 ```
 
-Counts are *requested*, not enforced — the engine passes the arrays through unchanged, so treat
-lengths defensively.
+`hashtags` counts are *requested*, not enforced — the engine passes the array through unchanged, so
+treat its length defensively.
+
+`max_completion_tokens` stays at 500 even though the ask shrank when `pose_tips` was dropped. On a
+reasoning-capable model that budget also covers reasoning tokens, so trimming it risks empty
+completions rather than saving latency — worth measuring against the real model before touching.
 
 ---
 
 ## 4. Errors
 
-| Status | Body | Cause |
+Every error body is `{"error": "<safe message>"}` — a single shape, and every message is safe to
+show the user verbatim.
+
+| Status | Message | Cause |
 |---|---|---|
-| `400` | `{"error": "Image not suitable for analysis"}` | flagged by `omni-moderation-latest` |
-| `500` | `{"error": "<message>", "type": "<ExceptionName>"}` | anything else |
+| `400` | `Image not suitable for analysis` | flagged by `omni-moderation-latest` |
+| `400` | `That image couldn't be read — try scanning again.` | undecodable / truncated / mislabelled upload |
+| `400` | `The upload was empty.` | zero-byte body |
+| `413` | `That image is too large — it must be under 8 MB.` | exceeds `MAX_UPLOAD_BYTES` |
+| `415` | `That file isn't a supported image — use a JPEG, PNG or WebP.` | `content_type` outside the allow-list |
+| `429` | `Too many scans in a row — wait a moment, then scan again.` | over 20 requests / 60 s from one IP |
+| `500` | `Analysis failed on the server — try again in a moment.` | anything else; detail is logged, never returned |
 
-Two things worth knowing:
+Notes:
 
+- **Exception ordering matters.** `InappropriateImageError` subclasses `ValueError`, so it must be
+  caught first or a moderation rejection would be reported as an unreadable image.
+- **The rate limit is cost control, not security.** Per-IP and in-memory, so it resets on every
+  free-plan cold start, and the `X-Forwarded-For` it keys on is client-spoofable. It exists because
+  each `/analyze` costs two OpenAI calls (moderation + vision). Needs a shared store if the service
+  is ever scaled past one instance.
+- **CORS is not access control.** `allow_origins` is pinned to the Netlify site (override with the
+  `ALLOWED_ORIGINS` env var, comma-separated, to add a preview deploy or `http://localhost:…` for
+  local dev). It stops other *sites* from spending the key through a visitor's browser; it does
+  nothing against a direct `curl`. There is still no authentication.
 - **Moderation fails open.** If the moderation call itself errors,
   [`_moderate_image`](scene_analysis.py#L116-L125) returns "safe". Deliberate, but it is a bypass.
-- **`500` leaks internals.** The raw exception string and class name are returned to the client
-  ([`api_server.py:34`](api_server.py#L34)). Should be replaced with an opaque message plus a
-  server-side log.
 
-The client treats a missing `lighting` key as a bad response regardless of status, so `lighting`
-is load-bearing for validity detection.
+The client treats a missing `lighting` key as a bad response regardless of status, and surfaces
+`data.error` as the toast text, so these messages reach the user as written.
+
+`lighting` is therefore load-bearing for validity detection — don't remove it.
 
 ---
 
@@ -215,7 +241,6 @@ is load-bearing for validity detection.
 | `hashtags` | ✅ | tappable pills, copy-all, share text |
 | `lighting` (presence) | ✅ | response-validity check |
 | `lighting.tip` | — | generated, not shown |
-| `pose_tips` | — | generated, not shown |
 | `composition` | — | generated, not shown |
 | `blueprint` | — | generated, not shown |
 | `blur_var`, `edge_sharpness` | — | diagnostics, for tuning only |
@@ -232,7 +257,12 @@ is load-bearing for validity detection.
 
 - No `contract_version` field — clients cannot tell which engine build answered.
 - No `coord_space: "normalized_topleft"` self-documenting marker.
-- `pose_tips` and `lighting.tip` are paid for on every scan and thrown away.
+- `lighting.tip` is computed on every scan and thrown away. It costs nothing (pure OpenCV, no
+  tokens), so this is a UI gap rather than waste — unlike `pose_tips`, which did cost tokens and
+  was removed in `0.10`.
+- Under the current product thesis — positioning, framing and colour grading are what matter —
+  `composition` and `blueprint` are the fields most worth surfacing next: `composition.horizon`
+  and `blueprint.notes` speak directly to framing, and both are already computed.
 
 ---
 
@@ -280,8 +310,10 @@ the vision prompt and validating/clamping the boxes server-side.
 
 ### 6.3 `framing_suggestions[]` — semantic placement directives
 
-Up to 3 ordered `{target, instruction, anchor}` directives, distinct from `pose_tips` (which are
-body language, not placement). The `anchor` was to be a closed set mapping 1:1 to UI affordances:
+Up to 3 ordered `{target, instruction, anchor}` directives about *placement* — of the subject or the
+camera. This is the one proposal here that still fits the current product thesis, since it is
+framing guidance rather than pose advice. The `anchor` was to be a closed set mapping 1:1 to UI
+affordances:
 
 ```
 left_third  right_third  center  upper_third  lower_third      ← subject grid cells
