@@ -141,10 +141,7 @@ def _analyze_with_gpt(b64: str) -> dict:
                     "Use the Warm variants for cosy/golden-hour scenes, Cool for clean/urban/overcast scenes, "
                     "Dramatic for moody or high-contrast scenes, and the black & white options (Silvertone soft, Noir high-contrast) "
                     "only when colour adds little.\n"
-                    "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase\n"
-                    "- \"pose_tips\": array of exactly 3 specific pose tips based on what you can see — "
-                    "lighting direction, available space, background, furniture, windows, etc. "
-                    "Be specific to this exact scene, not generic."
+                    "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase"
                 )},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
             ]
@@ -327,7 +324,6 @@ def analyze_scene(image_path: str) -> dict:
         "edge_sharpness": round(features["edge_sharpness"], 2),  # diagnostic — for tuning the gate
         "composition":  assess_composition(features),
         "placement":    features["placement"],
-        "pose_tips":    gpt.get("pose_tips", []),
         "hashtags":     gpt.get("hashtags", []),
         "filter":       filter_name,
     }
