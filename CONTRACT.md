@@ -1,107 +1,77 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** Capture, Share · **Version:** `1.0` (draft)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.9` (shipped)
 
-This document freezes the JSON that `POST /analyze` returns, so the **Capture** teammate
-(on-screen guidance / directional arrows) and the **Share** teammate (filter, hashtags,
-caption) can build against a stable interface while the engine is implemented.
+This document describes the JSON that `POST /analyze` **actually returns today**, as implemented in
+[`scene_analysis.py`](scene_analysis.py) and served by [`api_server.py`](api_server.py). Section 6
+records the larger `framing` design that was drafted but is **not implemented** — it is kept as a
+proposal, not a promise.
 
-> **Golden rule — every change is additive.** The engine never renames, removes, or
-> changes the type of an existing field. New fields default to `[]`, `""`, or `null`, so
-> an older client that ignores them keeps working. If you need a breaking change, bump
-> `contract_version` and tell the team first.
+> **History.** Earlier revisions of this file specified a `1.0` shape (`framing`, `objects`,
+> `framing_suggestions`, `scene_yap`, `contract_version`, `coord_space`) that the engine never
+> emitted, while omitting fields it does emit (`placement`, `blurry`, `blur_var`,
+> `edge_sharpness`). It has been rewritten to match reality. Version is `0.9` to make clear that
+> the `1.0` name is still unclaimed.
+
+> **Golden rule — every change is additive.** Never rename, remove, or change the type of an
+> existing field. New fields default to `[]`, `""`, or `null` so an older client keeps working.
+> A breaking change needs a version bump and a heads-up to the team.
 
 ---
 
 ## 1. The one coordinate convention (read this first)
 
-Every position in this contract uses **one** convention. State it once, honour it everywhere —
-this is the single most common integration bug.
+Every position in this contract uses **one** convention:
 
 ```
 normalized [0, 1]   origin = TOP-LEFT of the frame   x → right   y → DOWN
 ```
 
 - To draw on screen: `px = x * videoClientWidth`, `py = y * videoClientHeight`.
-- This matches the existing CSS grid in `web/index.html` (`top: 33.33% / 66.66%`,
-  `left: 33.33% / 66.66%`), so the 4 rule-of-thirds intersections are
+- This matches the CSS grid in [`web/index.html`](web/index.html) (`top: 33.33% / 66.66%`,
+  `left: 33.33% / 66.66%`), so the four rule-of-thirds intersections are
   `x ∈ {0.333, 0.667} × y ∈ {0.333, 0.667}`.
-- Coordinates are **resolution-independent**: the scan frame (~1024px) and the keeper
-  frame (~1440px) share the same field of view, so the same normalized point lands
+- Coordinates are **resolution-independent**: the scan frame (capped at 1024px) and the keeper
+  frame (capped at 2560px) share the same field of view, so the same normalized point lands
   correctly on both.
-- Angles (tilt) are **degrees, signed**: positive = the scene's horizon is rolled
-  **clockwise** (so the user rotates counter-clockwise to correct).
 
-`"coord_space": "normalized_topleft"` is included in every response as a self-documenting marker.
+Note that the response does **not** currently carry a `coord_space` marker — see §5.
 
 ---
 
 ## 2. Full example response
 
-Existing fields (already shipped) are abbreviated; **new fields are shown in full.**
+Every field below is always present on a `200`. There are no optional keys.
 
 ```jsonc
 {
-  "contract_version": "1.0",
-  "coord_space": "normalized_topleft",
+  "scene_type":     "Café",
 
-  // ── EXISTING (unchanged) ──────────────────────────────────────────────
-  "scene_type": "Café",
-  "blueprint":   { "orientation": "portrait", "grid": "rule_of_thirds",
-                   "notes": ["strong rule-of-thirds alignment"] },
-  "lighting":    { "quality": "Good", "tone": "Warm",
-                   "tip": "Good natural light, shoot facing forward" },
-  "composition": { "focus": "Sharp", "horizon": "Slightly tilted", "balance": "Balanced" },
-  "pose_tips":   ["Lean against the window frame on the left",
-                  "Angle your shoulders toward the soft window light",
-                  "Hold the coffee cup low, hands relaxed"],
-  "hashtags":    ["#cafevibes", "#coffeetime", "#打卡"],
-  "filter":      "Vivid Warm",
+  "blueprint":      { "orientation": "landscape",
+                      "grid": "rule_of_thirds",
+                      "notes": ["strong rule-of-thirds alignment"] },
 
-  // ── NEW · raw detection (AI Engine) ───────────────────────────────────
-  "objects": [
-    { "label": "window", "box": { "x": 0.05, "y": 0.10, "w": 0.30, "h": 0.55 }, "confidence": 0.88 },
-    { "label": "table",  "box": { "x": 0.40, "y": 0.62, "w": 0.45, "h": 0.30 }, "confidence": 0.81 }
-  ],
+  "lighting":       { "quality": "Good",
+                      "tone": "Warm",
+                      "tip": "Good natural light, shoot facing forward" },
 
-  // ── NEW · authoritative framing guidance → Capture ────────────────────
-  "framing": {
-    "subject": {
-      "detected":   true,
-      "source":     "gpt",                                  // "gpt" | "saliency"
-      "label":      "person",                               // "salient_region" when saliency-only
-      "confidence": 0.82,
-      "center":     { "x": 0.52, "y": 0.61 },
-      "bbox":       { "x": 0.34, "y": 0.30, "w": 0.30, "h": 0.55 },  // may be null
-      "size":       0.70                                    // suggested subject height (fraction of frame)
-    },
-    "target":   { "intersection": "bottom-left", "x": 0.333, "y": 0.667 },
-    "guidance": {
-      "move_subject_x": "left",     // "left" | "right" | "ok"
-      "move_subject_y": "up",       // "up"   | "down"  | "ok"
-      "distance":       "closer",   // "closer" | "farther" | "ok"
-      "dx": -0.187, "dy": -0.057,   // signed offset (target − subject); use for arrow length
-      "strength": 0.31              // 0..1 magnitude of (dx,dy); arrow size / when to snap to "ok"
-    },
-    "level": {
-      "scene_horizon_tilt_deg": 3.4,   // tilt of the SCENE's horizon (static); + = clockwise
-      "needs_straightening":    true,  // == alignment < 0.7, precomputed
-      "source_alignment":       0.71   // raw features.alignment, passed through
-    },
-    "camera_tilt": {
-      "direction": "down",             // "up" | "down" | "ok"
-      "reason":    "Tilt down — empty floor below adds nothing; the café wall has character"
-    },
-    "reason": "Stand at the left third by the window so soft light hits your face"
-  },
+  "composition":    { "focus": "Sharp",
+                      "horizon": "Slightly tilted",
+                      "balance": "Balanced" },
 
-  // ── NEW · generate branch → Capture (directives) + Share (caption) ────
-  "framing_suggestions": [
-    { "target": "subject", "instruction": "Stand in the lower-left third under the hanging plant", "anchor": "left_third" },
-    { "target": "camera",  "instruction": "Step back two paces to catch the full doorway arch",    "anchor": "step_back" },
-    { "target": "camera",  "instruction": "Tilt down slightly so the tabletop leads into frame",    "anchor": "tilt_down" }
-  ],
-  "scene_yap": "Cosy corner, golden light — this spot was made for a 打卡. ☕"
+  "blurry":         false,
+  "blur_var":       184.3,      // diagnostic — for tuning the blur gate
+  "edge_sharpness": 21.47,      // diagnostic — for tuning the blur gate
+
+  "placement":      { "x": 0.667, "y": 0.667 },
+
+  "pose_tips":      ["Lean against the window frame on the left",
+                     "Angle your shoulders toward the soft window light",
+                     "Hold the coffee cup low, hands relaxed"],
+
+  "hashtags":       ["#cafevibes", "#coffeetime", "#goldenhour"],
+
+  "filter":         "Vivid Warm"
 }
 ```
 
@@ -109,158 +79,226 @@ Existing fields (already shipped) are abbreviated; **new fields are shown in ful
 
 ## 3. Field reference
 
-### 3.1 `objects[]` — raw detected things *(advisory)*
-What the engine sees in the (empty) scene. Use it to avoid placing the subject on top of
-furniture, or to label what framing should keep/avoid. **Advisory only** — do not build core
-logic on it (boxes can drift; the engine may occasionally hallucinate). Drive placement from
-`framing` instead.
+### 3.1 `placement` — where the subject should stand *(drives the standing marker)*
 
 | Field | Type | Notes |
 |---|---|---|
-| `label` | string | free-text, e.g. `"window"`, `"table"` |
-| `box` | `{x,y,w,h}` | normalized top-left xywh |
-| `confidence` | number | `0..1` |
+| `x` | number | **snapped to a rule-of-thirds line: `0.333` or `0.667`** |
+| `y` | number | clamped to `[0.60, 0.72]` — adapts to where saliency mass sits vertically |
 
-Guarantees: array, length **≤ 8**, may be `[]`. Low-confidence / malformed entries are dropped by the engine.
+Computed by [`_compute_placement`](scene_analysis.py#L39-L113), which fuses three gated signals —
+visual **balance** (stand opposite the scene's focal mass), background **cleanliness** (prefer the
+side whose body-band is emptier), and **light direction** (stand on the dimmer side so light falls
+on the face) — plus a hard **backlight veto** so the subject is never placed in front of a
+blown-out region. Never raises; falls back to `{0.667, 0.667}`.
 
-### 3.2 `framing` — the authoritative guidance object *(Capture builds arrows from this)*
-The engine **bakes the math** so the frontend stays dumb — you read enums, you don't compute geometry.
+> ⚠️ **This is a composition target, not a point to aim the camera at.** `x` is already snapped to
+> a thirds line for the framing that was scanned. Panning the camera until this point reaches
+> screen-centre would drag the subject to dead-centre and discard the placement the engine solved
+> for. Draw it as a fixed in-frame marker. (This exact confusion was a live bug; see the
+> `standPos` / `aim` comment block in `index.html`.)
 
-**`framing.subject`** — the subject and where it currently is.
-| Field | Type | Notes |
+### 3.2 `lighting` — *(gates capture)*
+
+| Field | Type | Values |
 |---|---|---|
-| `detected` | bool | **`false` ⇒ hide arrows, fall back to the static grid prompt** |
-| `source` | enum | `"gpt"` (real detection) or `"saliency"` (OpenCV fallback) |
-| `label` | string | `"person"`, or `"salient_region"` when saliency-only |
-| `confidence` | number | `0..1` — gate jittery arrows on this if you like |
-| `center` | `{x,y}` | subject centroid |
-| `bbox` | `{x,y,w,h}` \| null | optional; null when saliency-only |
-| `size` | number \| null | suggested subject height as a fraction of frame height; `null` when the model omits it (common on empty-scene scans) |
+| `quality` | enum | `Good` (brightness 100–200) · `Fair` (60–100 or 200–230) · `Poor` (otherwise) |
+| `tone` | enum | `Warm` (`color_ratio` < 0.7) · `Cool` (> 0.9) · `Neutral` (between) |
+| `tip` | string | one of nine fixed strings, keyed by `(quality, tone)` |
 
-**`framing.target`** — where the subject *should* go (nearest strong rule-of-thirds point).
-| Field | Type | Notes |
-|---|---|---|
-| `intersection` | enum | `top-left` \| `top-right` \| `bottom-left` \| `bottom-right` \| `center` |
-| `x`, `y` | number | the point the arrow aims at |
+**`quality == "Poor"` blocks the flow** — the client shows the capture gate and forces a rescan.
 
-**`framing.guidance`** — precomputed directions (deadband ±0.04).
-| Field | Type | Notes |
-|---|---|---|
-| `move_subject_x` | enum | `left` \| `right` \| `ok` |
-| `move_subject_y` | enum | `up` \| `down` \| `ok` |
-| `distance` | enum | `closer` \| `farther` \| `ok` |
-| `dx`, `dy` | number | signed `target − subject`; arrow vector |
-| `strength` | number | `0..1`; magnitude of the offset |
+`color_ratio` is an internal feature, not part of this response. It is
+`avg_color[0] / avg_color[2]` over an image `cv2.imread` loads as **BGR**, so it is
+**blue ÷ red** — a *higher* ratio means *more blue*, i.e. a **cooler** scene. The neutral band sits
+near 0.8 rather than 1.0 because most scenes carry a mild red bias.
 
-> ⚠️ **TEAM DECISION (default chosen): `move_subject_*` moves the SUBJECT in-frame.**
-> "Move the camera" is the **opposite** direction. If Capture prefers camera-relative arrows,
-> tell the engine and it will emit a parallel `move_camera_x/y` instead of flipping meanings.
+> **Behaviour change (`tone` inversion fixed).** `assess_lighting` previously mapped the *high*
+> (blue-dominant) end of `color_ratio` to `"Warm"`, so `tone` — and therefore the `tip` string —
+> came out backwards: a golden-hour café was told "Nice cool tones, use them for a clean
+> aesthetic". The two comparisons have been swapped; thresholds are unchanged, so the neutral band
+> stays where it was calibrated and `quality` is unaffected. The nine `tip` strings were already
+> written for the correct semantics and now route correctly. `filter` was never affected — the
+> model picks that independently. **Any `tone` value recorded before this fix is inverted.**
 
-**`framing.level`** — static scene tilt (NOT live device roll).
-| Field | Type | Notes |
-|---|---|---|
-| `scene_horizon_tilt_deg` | number | signed; tilt of the captured scene's horizon |
-| `needs_straightening` | bool | `alignment < 0.7` |
-| `source_alignment` | number | raw `features.alignment` |
-
-> The **live** camera-roll bubble stays frontend-owned (the existing `deviceorientation`
-> gamma listener in `index.html`). `framing.level` only describes the analysed *scene*. Don't
-> double-count them in one indicator.
-
-**`framing.camera_tilt`** — tilt the camera up or down for a better subject backdrop.
-| Field | Type | Notes |
-|---|---|---|
-| `direction` | enum | `"up"` \| `"down"` \| `"ok"` — tilt toward the better content (up for dead floor, down for dead ceiling) |
-| `reason` | string | short sentence explaining why (`≤ 120` chars; may be `""`) |
-
-**`framing.reason`** — one short human string explaining the placement (good for a tip line).
-
-### 3.3 `framing_suggestions[]` — semantic placement directives *(generate branch)*
-**Up to 3** ordered (most-impactful-first) directives (may be fewer, or `[]`). Distinct from `pose_tips`
-(body language) — these are about *placement* of subject/camera.
+### 3.3 `blurry`, `blur_var`, `edge_sharpness` — *(gates capture)*
 
 | Field | Type | Notes |
 |---|---|---|
-| `target` | enum | `"subject"` or `"camera"` |
-| `instruction` | string | imperative, ≤ ~12 words; safe to show on screen verbatim |
-| `anchor` | enum (closed set) \| null | maps 1:1 to a UI affordance — see below; `null` if mismatched/unknown |
+| `blurry` | bool | **`true` blocks the flow** and forces a rescan |
+| `blur_var` | number | variance of Laplacian, 1 d.p. — diagnostic only |
+| `edge_sharpness` | number | mean \|Laplacian\| at Canny edges, 2 d.p.; `-1.0` means "too plain to judge" |
 
-**Closed `anchor` set** (switch on these; fall back to showing `instruction` text if unknown):
+The gate is deliberately **content-robust**: variance-of-Laplacian alone flags any low-texture
+scene (plain wall, minimalist café) as blurry, which blocked the whole flow. Instead the engine
+judges the sharpness of the edges that actually exist, and gives a near-featureless frame the
+benefit of the doubt. Thresholds are lenient — over-rejecting is the worse failure — and tunable
+against `blur_var` / `edge_sharpness` from real photos. See
+[`scene_analysis.py:29-37`](scene_analysis.py#L29-L37).
+
+### 3.4 `composition` — descriptive assessment
+
+| Field | Type | Values |
+|---|---|---|
+| `focus` | enum | `Sharp` · `Soft` · `Blurry` (from Canny edge density) |
+| `horizon` | enum | `Level` · `Slightly tilted` · `Tilted` (from Hough-line deviation) |
+| `balance` | enum | `Balanced` · `Slightly off` · `Unbalanced` (from left/right saliency split) |
+
+Derived from measured features, not from the model — reliable. Currently **unused by the UI**.
+
+### 3.5 `blueprint` — orientation + advisory notes
+
+| Field | Type | Notes |
+|---|---|---|
+| `orientation` | enum | `portrait` (h ≥ w) · `landscape` |
+| `grid` | const | always `"rule_of_thirds"` |
+| `notes` | string[] | 0–3 of: tilted horizon · unbalanced composition · strong rule-of-thirds alignment |
+
+Currently **unused by the UI**.
+
+### 3.6 `scene_type`, `pose_tips`, `hashtags`, `filter` — the model's output
+
+All four come from a single vision call in
+[`_analyze_with_gpt`](scene_analysis.py#L128-L163), and all four **degrade rather than fail**: a
+truncated, empty, refused, or unparseable completion yields `{}`, and each field falls back to its
+default rather than 500ing the scan.
+
+| Field | Type | Fallback | Notes |
+|---|---|---|---|
+| `scene_type` | string | `"Unknown"` | concise name, e.g. `"Café"`, `"City Street"`, `"Temple"` |
+| `pose_tips` | string[] | `[]` | asked for exactly 3, scene-specific. **Generated but unused by the UI** |
+| `hashtags` | string[] | `[]` | asked for exactly 3, lowercase, with `#` |
+| `filter` | enum | `"Vivid"` | **server-validated** against the list below; anything else becomes `"Vivid"` |
+
+Closed `filter` set — the client maps these 1:1 to CSS filter strings:
+
 ```
-left_third  right_third  center  upper_third  lower_third          ← subject grid cells
-tilt_up  tilt_down  pan_left  pan_right                            ← camera rotation
+Vivid  Vivid Warm  Vivid Cool
+Dramatic  Dramatic Warm  Dramatic Cool
+Silvertone  Noir
+```
+
+Counts are *requested*, not enforced — the engine passes the arrays through unchanged, so treat
+lengths defensively.
+
+---
+
+## 4. Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{"error": "Image not suitable for analysis"}` | flagged by `omni-moderation-latest` |
+| `500` | `{"error": "<message>", "type": "<ExceptionName>"}` | anything else |
+
+Two things worth knowing:
+
+- **Moderation fails open.** If the moderation call itself errors,
+  [`_moderate_image`](scene_analysis.py#L116-L125) returns "safe". Deliberate, but it is a bypass.
+- **`500` leaks internals.** The raw exception string and class name are returned to the client
+  ([`api_server.py:34`](api_server.py#L34)). Should be replaced with an opaque message plus a
+  server-side log.
+
+The client treats a missing `lighting` key as a bad response regardless of status, so `lighting`
+is load-bearing for validity detection.
+
+---
+
+## 5. Consumer cheat-sheet — who reads what
+
+| Field | Consumed by `index.html` | How |
+|---|:---:|---|
+| `lighting.quality` | ✅ | capture gate — `Poor` blocks |
+| `blurry` | ✅ | capture gate — `true` blocks |
+| `scene_type` | ✅ | badge on camera + results |
+| `placement` | ✅ | fixed standing marker |
+| `filter` | ✅ | preview + baked into the saved pixels |
+| `hashtags` | ✅ | tappable pills, copy-all, share text |
+| `lighting` (presence) | ✅ | response-validity check |
+| `lighting.tip` | — | generated, not shown |
+| `pose_tips` | — | generated, not shown |
+| `composition` | — | generated, not shown |
+| `blueprint` | — | generated, not shown |
+| `blur_var`, `edge_sharpness` | — | diagnostics, for tuning only |
+
+**Client must-honour guarantees**
+
+1. All coords are normalized, top-left origin, `[0,1]`.
+2. `filter` comes only from the closed set in §3.6; unknown values must fall back, not throw.
+3. `placement` is an in-frame composition target — render it fixed, never chase it with the camera.
+4. Live device roll (the level slider) is entirely client-owned, read from `devicemotion`. The
+   engine reports **scene** tilt via `composition.horizon`. Don't merge the two into one indicator.
+
+**Known gaps** (cheap, additive, worth doing)
+
+- No `contract_version` field — clients cannot tell which engine build answered.
+- No `coord_space: "normalized_topleft"` self-documenting marker.
+- `pose_tips` and `lighting.tip` are paid for on every scan and thrown away.
+
+---
+
+## 6. Proposed, NOT implemented
+
+Everything in this section is design work, not API surface. **Do not build against it.** It is
+retained because the geometry is worked out and most of it is derivable from features the engine
+already computes.
+
+### 6.1 `framing` — bake the math server-side
+
+The idea: the engine precomputes guidance so the client reads enums instead of doing geometry.
+
+```jsonc
+"framing": {
+  "subject":  { "detected": true, "source": "saliency", "label": "salient_region",
+                "confidence": 0.82, "center": {"x":0.52,"y":0.61},
+                "bbox": null, "size": 0.70 },
+  "target":   { "intersection": "bottom-left", "x": 0.333, "y": 0.667 },
+  "guidance": { "move_subject_x": "left", "move_subject_y": "up", "distance": "closer",
+                "dx": -0.187, "dy": -0.057, "strength": 0.31 },
+  "level":    { "scene_horizon_tilt_deg": 3.4, "needs_straightening": true,
+                "source_alignment": 0.71 },
+  "reason":   "Stand at the left third by the window so soft light hits your face"
+}
+```
+
+Feasibility from today's code:
+
+| Sub-object | Status |
+|---|---|
+| `level` | **Easy** — `features["alignment"]` already exists; `needs_straightening` is `alignment < 0.7` |
+| `target` | **Easy** — `placement` already is the nearest strong thirds point |
+| `subject` | **Needs live tracking.** `/analyze` is one-shot on an *empty* scene, so there is no subject to detect. This only becomes meaningful with in-browser per-frame tracking |
+| `guidance` | Depends on `subject` — it is `target − subject`, so it needs the above first |
+
+> If `guidance` is ever built, settle the sign convention **first**: `move_subject_*` moves the
+> subject in-frame; moving the *camera* is the opposite direction. Pick one and name it explicitly.
+
+### 6.2 `objects[]` — raw detections
+
+`[{ "label": "window", "box": {x,y,w,h}, "confidence": 0.88 }]`, ≤ 8 entries, advisory only. Would
+let the client avoid placing the subject on top of furniture. Requires adding object detection to
+the vision prompt and validating/clamping the boxes server-side.
+
+### 6.3 `framing_suggestions[]` — semantic placement directives
+
+Up to 3 ordered `{target, instruction, anchor}` directives, distinct from `pose_tips` (which are
+body language, not placement). The `anchor` was to be a closed set mapping 1:1 to UI affordances:
+
+```
+left_third  right_third  center  upper_third  lower_third      ← subject grid cells
+tilt_up  tilt_down  pan_left  pan_right                        ← camera rotation
 step_back  step_closer  raise_camera  lower_camera  level_horizon  ← camera position / level
 ```
 
-> **`anchor` is coupled to `target`:** when `target` is `"subject"` the anchor is one of the grid
-> cells (row 1); when `target` is `"camera"` it is one of the rotation/position tags (rows 2–3).
-> The engine emits `anchor: null` if the model returns a mismatched or unknown anchor — render the
-> `instruction` text only in that case.
+### 6.4 `scene_yap` — shareable one-liner
 
-### 3.4 `scene_yap` — shareable one-liner *(Share branch)*
-One fun, on-brand sentence (≤ ~90 chars) for the quick-share caption, next to the
-hashtag pills and the "Shot with 打卡AI" watermark.
+One on-brand sentence (≤ ~90 chars) for the share caption, alongside the hashtag pills and the
+"Shot with 打卡AI" watermark. Open question: English voice with `打卡` allowed inline, ≤ 1 emoji, no
+hashtags inside — and whether the emoji survives into the watermark.
 
-> ⚠️ **TEAM DECISION (default chosen): English voice, the token `打卡` allowed inline,
-> ≤ 1 emoji, no hashtags inside.** All other fields stay strictly English. Confirm whether
-> Share strips the emoji before baking it into the watermark image.
+### 6.5 Out of scope
 
----
-
-## 4. Consumer cheat-sheet — who reads what
-
-| Field | Capture | Share | Current UI |
-|---|:---:|:---:|:---:|
-| `scene_type` | — | — | ✅ badge |
-| `lighting`, `composition`, `blueprint` | ✅ copy | — | partial |
-| `pose_tips` | ✅ pose panel | — | ✅ swiper |
-| `objects` | ✅ avoid-overlap | — | — |
-| **`framing`** | ✅ **arrows + marker + level** | — | — |
-| **`framing.camera_tilt`** | ✅ **tilt indicator** | — | — |
-| **`framing_suggestions`** | ✅ **directive arrows / zones** | — | — |
-| `filter` | — | ✅ auto-filter | ✅ preview |
-| `hashtags` | — | ✅ tags | ✅ pills |
-| **`scene_yap`** | — | ✅ **caption** | — |
-
-**Capture's must-honour guarantees**
-1. All coords are normalized, top-left origin, `[0,1]`.
-2. `guidance` / `anchor` values come only from the closed enum sets above.
-3. When `framing.subject.detected == false`, **degrade to the static grid prompt** — do not draw arrows.
-4. Live device roll = your `deviceorientation` listener; `framing.level` = static scene tilt. Keep them separate.
-
-**Share's must-honour guarantees**
-1. Read `scene_yap`, `hashtags`, `filter` only; ignore `framing*`.
-2. Treat all as optional — `scene_yap` may be `""` on older responses.
-
----
-
-## 5. Reliability notes (how the engine fills these)
-
-- **`framing.subject`** comes from the GPT vision call first; if GPT omits a placement, the engine
-  falls back to an OpenCV saliency centroid / strongest rule-of-thirds intersection. `source`
-  tells you which. **`framing.target.{x,y}` and a usable subject point are *always* present.**
-- **`objects`** are advisory and may be empty.
-- **`framing.level`** is derived from the existing OpenCV alignment metric — reliable.
-- The engine validates & clamps everything server-side; consumers should still defensively
-  default missing fields rather than assume.
-
----
-
-## 6. Explicitly out of scope for v1
-
-- **Lens awareness.** The 0.5× ultra-wide lens is a client-side capture concern; `/analyze`
-  is **not** lens-aware in v1 (no `lens` request field, no `capture` block). Revisit only if
-  ultra-wide distortion is found to skew framing advice.
-- **Real-time per-frame tracking.** `/analyze` is one-shot per scan. Any live person-tracking
-  (e.g. in-browser MediaPipe) is optional Capture-owned client polish, layered *on top* of the
-  `framing.target` this contract provides — not an engine dependency.
-
----
-
-## 7. Open questions to close before freezing `1.0`
-
-1. **Arrow semantics** — confirm `move_subject_*` (subject-relative) vs. add `move_camera_*` (§3.2).
-2. **`scene_yap` language/emoji policy** — confirm the default in §3.4.
-3. **Object filtering** — agree a confidence floor / max count so the subject is never placed on phantom furniture.
-
-Once these are signed off, change the version line to `1.0` (frozen) and treat any later change as additive.
+- **Lens awareness.** The 0.5× ultra-wide toggle is a client-side capture concern; `/analyze` is
+  not lens-aware and has no `lens` request field. Revisit only if ultra-wide distortion is found
+  to skew placement advice.
+- **Real-time tracking in the engine.** `/analyze` is one-shot per scan. Any live tracking is
+  client-owned polish layered on top of `placement`, not an engine dependency.

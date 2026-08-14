@@ -172,6 +172,9 @@ def extract_features(image_path: str) -> dict:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     brightness = float(np.mean(gray))
+    # cv2 loads BGR, so avg_color is [blue, green, red] and color_ratio is BLUE / RED.
+    # Mind the direction: a HIGHER ratio means MORE BLUE, i.e. a COOLER scene. (assess_lighting
+    # had this backwards and reported warm scenes as cool.)
     avg_color = np.mean(img, axis=(0, 1))
     color_ratio = float(avg_color[0] / (avg_color[2] + 1e-5))
 
@@ -267,10 +270,14 @@ def assess_lighting(features: dict) -> dict:
     else:
         quality = "Poor"
 
+    # color_ratio is blue/red (see extract_features): high = blue-dominant = Cool.
+    # Thresholds are unchanged from the original calibration — only the labels were swapped —
+    # so the neutral band still sits where it was tuned (most scenes carry a mild red bias,
+    # which is why the band is centred near 0.8 rather than 1.0).
     if color_ratio > 0.9:
-        tone = "Warm"
-    elif color_ratio < 0.7:
         tone = "Cool"
+    elif color_ratio < 0.7:
+        tone = "Warm"
     else:
         tone = "Neutral"
 
