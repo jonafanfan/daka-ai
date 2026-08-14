@@ -1,0 +1,53 @@
+name: tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A new push supersedes an in-flight run on the same ref — keeps the queue short when
+# several commits land in a row.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Kept close to what Render builds with. Neither is pinned today, so they can drift —
+          # see the PR notes on adding a .python-version to make CI and production agree.
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # No apt packages needed: the project depends on opencv-contrib-python-headless, which
+      # bundles its own libs and needs no libGL/X11. Swapping to non-headless opencv would
+      # break this step.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Show resolved versions
+        # requirements.txt uses >= with no upper bounds, so the resolved set can differ between
+        # runs. Logging it makes "passed last week, fails today" diagnosable.
+        run: pip list
+
+      # No OPENAI_API_KEY secret is configured or needed: the suite monkeypatches analyze_scene
+      # and makes no network calls. If a test ever starts needing a key, that is a bug in the
+      # test, not a missing secret.
+      - name: Run tests
+        run: pytest
