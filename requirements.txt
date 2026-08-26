@@ -1,10 +1,25 @@
+# Production dependencies — exactly what Render installs.
+#
+# PINNED (==), not ranged. The previous >= floors let Render, CI and each developer resolve a
+# different set: the >=4.8.0 floor on OpenCV was silently resolving 5.0.0, a major version bump,
+# and openai >=1.0.0 was resolving 3.0.0. Nothing had broken yet, but "it happens to agree today"
+# is not a guarantee, and a silent major bump surfaces as a mysterious deploy failure weeks later.
+#
+# These versions are the set CI resolves on Python 3.13 and that the test suite passes against
+# (see .python-version — the pins are only guaranteed installable on that interpreter).
+#
+# To upgrade: bump one line, run the tests, and read the release notes for anything crossing a
+# major version. Do not bulk-refresh these without running the suite.
+
 # --- Computer Vision ---
-opencv-contrib-python-headless>=4.8.0
-Pillow>=10.0.0
-numpy>=1.24.0
+# The -headless build is deliberate: it bundles its own libs and needs no libGL/X11, which is why
+# CI needs no apt packages. Switching to plain opencv-contrib-python breaks the CI install step.
+opencv-contrib-python-headless==5.0.0.93
+Pillow==12.3.0
+numpy==2.5.2
 
 # --- API Server ---
-fastapi>=0.104.0
-uvicorn>=0.24.0
-python-multipart>=0.0.6
-openai>=1.0.0
+fastapi==0.141.1
+uvicorn==0.52.3
+python-multipart==0.0.32
+openai==3.0.0

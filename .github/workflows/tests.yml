@@ -25,9 +25,9 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # Kept close to what Render builds with. Neither is pinned today, so they can drift —
-          # see the PR notes on adding a .python-version to make CI and production agree.
-          python-version: '3.13'
+          # Read from .python-version — the same file Render reads, so CI and production cannot
+          # drift apart. Do not hardcode a version here as well.
+          python-version-file: .python-version
           cache: pip
           cache-dependency-path: |
             requirements.txt
