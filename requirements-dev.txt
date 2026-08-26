@@ -5,6 +5,9 @@
 #   .venv/Scripts/python -m pip install -r requirements.txt -r requirements-dev.txt   # Windows
 #   .venv/bin/python     -m pip install -r requirements.txt -r requirements-dev.txt   # macOS/Linux
 #   .venv/Scripts/python -m pytest
+#
+# Pinned for the same reason as requirements.txt: a test suite that passes against a different
+# dependency set than production isn't telling you much.
 
-pytest>=8.0.0
-httpx>=0.27.0          # required by fastapi.testclient.TestClient
+pytest==9.1.1
+httpx==0.28.1          # required by fastapi.testclient.TestClient
