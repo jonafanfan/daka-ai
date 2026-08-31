@@ -1,8 +1,17 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.10` (shipped)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.11` (shipped)
 
 > **Recent changes**
+>
+> - **`0.11` — a failing vision call no longer `500`s the scan.** Previously an OpenAI timeout,
+>   rate limit, auth failure or outage propagated and became a `500`, discarding OpenCV work that
+>   had already succeeded. It now degrades exactly like a bad completion: `200` with
+>   `scene_type: "Unknown"`, `hashtags: []`, `filter: "Vivid"`, and the whole measured half
+>   (`placement`, `composition`, `lighting`, `blurry`) fully intact. **Consumers that treated a
+>   `200` as proof the model ran must stop doing so** — check `scene_type != "Unknown"` instead.
+>   Non-object JSON from the model degrades the same way rather than raising. Both are logged
+>   server-side under the `daka.engine` logger.
 >
 > - **`0.10` — `pose_tips` removed (breaking).** The product thesis narrowed: subject positioning,
 >   framing and basic colour grading are what make the photo, and the subject poses how they want
@@ -164,10 +173,23 @@ Currently **unused by the UI**.
 
 ### 3.6 `scene_type`, `hashtags`, `filter` — the model's output
 
-All three come from a single vision call in
-[`_analyze_with_gpt`](scene_analysis.py#L128-L163), and all four **degrade rather than fail**: a
-truncated, empty, refused, or unparseable completion yields `{}`, and each field falls back to its
-default rather than 500ing the scan.
+All three come from a single vision call in `_analyze_with_gpt`, which **never raises**. Every
+failure mode yields `{}` and each field falls back to its default rather than failing the scan:
+
+- a truncated, empty, refused or unparseable completion
+- valid JSON that is not an object (an array, string, number or `null`)
+- an **API-level failure** — timeout, rate limit, auth failure, outage *(new in `0.11`)*
+
+This is deliberate rather than incidental. The measured half of the response — `placement`,
+`composition`, `lighting`, `blueprint`, `blurry` — is computed by OpenCV before the vision call and
+does not depend on the model at all, so an OpenAI incident costs the scene label and hashtags while
+leaving positioning and framing fully intact.
+
+> **The corollary for consumers:** a `200` is *not* proof the model ran. A response where
+> `scene_type` is `"Unknown"`, `hashtags` is `[]` and `filter` is `"Vivid"` is indistinguishable
+> from a degraded one — because that is exactly what a degraded one looks like. If you need to
+> know, test `scene_type != "Unknown"`. Server-side, both failure classes are logged as warnings
+> under the `daka.engine` logger.
 
 | Field | Type | Fallback | Notes |
 |---|---|---|---|
@@ -206,6 +228,11 @@ show the user verbatim.
 | `415` | `That file isn't a supported image — use a JPEG, PNG or WebP.` | `content_type` outside the allow-list |
 | `429` | `Too many scans in a row — wait a moment, then scan again.` | over 20 requests / 60 s from one IP |
 | `500` | `Analysis failed on the server — try again in a moment.` | anything else; detail is logged, never returned |
+
+Since `0.11` a failing **vision** call is no longer in the `500` bucket — it degrades to a `200`
+(see §3.6). A failing **moderation** call was already outside it, since moderation fails open. So
+the remaining realistic causes of a `500` are OpenCV or PIL faults on a file that decoded but could
+not be analysed.
 
 Notes:
 

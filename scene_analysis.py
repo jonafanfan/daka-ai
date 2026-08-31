@@ -1,10 +1,16 @@
 import base64
 import io
 import json
+import logging
 import cv2
 import numpy as np
 from PIL import Image
 from openai import OpenAI
+
+# Both OpenAI calls degrade rather than fail the scan, which means an outage is otherwise
+# completely invisible: a bad completion and a dead API produce the same empty result. Log at
+# warning so "why is every scene Unknown?" is answerable from the Render logs.
+logger = logging.getLogger("daka.engine")
 
 _openai_client = None
 
@@ -122,32 +128,50 @@ def _moderate_image(b64: str) -> bool:
         )
         return not response.results[0].flagged
     except Exception:
+        # Fails OPEN: a moderation outage must not block every scan. This is a safety bypass, so
+        # log it — silently waving images through is how you find out months later.
+        logger.warning("moderation call failed; treating image as safe", exc_info=True)
         return True
 
 
 def _analyze_with_gpt(b64: str) -> dict:
-    response = _get_openai_client().chat.completions.create(
-        model="gpt-5.4-nano",
-        response_format={"type": "json_object"},
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": (
-                    "You are analysing a photo for a 打卡 (check-in) photography app used in China.\n"
-                    "Return a JSON object with exactly these fields IN ENGLISH:\n"
-                    "- \"scene_type\": concise scene name (e.g. \"Café\", \"City Street\", \"Beach\", \"Temple\")\n"
-                    "- \"filter\": pick the best from exactly: "
-                    "\"Vivid\", \"Vivid Warm\", \"Vivid Cool\", \"Dramatic\", \"Dramatic Warm\", \"Dramatic Cool\", \"Silvertone\", \"Noir\". "
-                    "Use the Warm variants for cosy/golden-hour scenes, Cool for clean/urban/overcast scenes, "
-                    "Dramatic for moody or high-contrast scenes, and the black & white options (Silvertone soft, Noir high-contrast) "
-                    "only when colour adds little.\n"
-                    "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase"
-                )},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-            ]
-        }],
-        max_completion_tokens=500,
-    )
+    """Scene name, filter and hashtags from the vision model. Never raises — returns {} instead.
+
+    Every failure mode degrades to {}, which analyze_scene turns into safe defaults
+    (scene_type "Unknown", no hashtags, filter "Vivid"). That matters because the OpenCV half of
+    the scan — placement, framing, lighting, blur — does not depend on the model at all, so an
+    OpenAI incident should cost the scene label, not the whole feature.
+    """
+    try:
+        response = _get_openai_client().chat.completions.create(
+            model="gpt-5.4-nano",
+            response_format={"type": "json_object"},
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": (
+                        "You are analysing a photo for a 打卡 (check-in) photography app used in China.\n"
+                        "Return a JSON object with exactly these fields IN ENGLISH:\n"
+                        "- \"scene_type\": concise scene name (e.g. \"Café\", \"City Street\", \"Beach\", \"Temple\")\n"
+                        "- \"filter\": pick the best from exactly: "
+                        "\"Vivid\", \"Vivid Warm\", \"Vivid Cool\", \"Dramatic\", \"Dramatic Warm\", \"Dramatic Cool\", \"Silvertone\", \"Noir\". "
+                        "Use the Warm variants for cosy/golden-hour scenes, Cool for clean/urban/overcast scenes, "
+                        "Dramatic for moody or high-contrast scenes, and the black & white options (Silvertone soft, Noir high-contrast) "
+                        "only when colour adds little.\n"
+                        "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase"
+                    )},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                ]
+            }],
+            max_completion_tokens=500,
+        )
+    except Exception:
+        # Timeout, rate limit, auth failure, outage. Degrades like a bad completion: the OpenCV
+        # features are already computed by the time this is called, so failing the scan here would
+        # throw away work that succeeded and break placement/framing, which never needed the model.
+        logger.warning("vision call failed; falling back to defaults", exc_info=True)
+        return {}
+
     # A truncated, empty, or refused completion must degrade — not 500 the whole scan.
     # analyze_scene reads every field via gpt.get(...), so {} falls back to safe defaults.
     choice = response.choices[0] if response.choices else None
@@ -155,9 +179,16 @@ def _analyze_with_gpt(b64: str) -> dict:
     if not content:
         return {}
     try:
-        return json.loads(content)
+        parsed = json.loads(content)
     except (json.JSONDecodeError, ValueError, TypeError):
         return {}
+    # response_format=json_object should guarantee an object, but a bare array/string/null would
+    # reach analyze_scene's gpt.get(...) calls and raise AttributeError — a 500 from the one
+    # function whose contract is never to cause one.
+    if not isinstance(parsed, dict):
+        logger.warning("vision call returned non-object JSON (%s); ignoring", type(parsed).__name__)
+        return {}
+    return parsed
 
 
 def extract_features(image_path: str) -> dict:
