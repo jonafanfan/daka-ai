@@ -71,6 +71,16 @@ def completion(content):
 NO_CHOICES = types.SimpleNamespace(choices=[])
 
 
+class RealClientForbidden(BaseException):
+    """Deliberately a BaseException, not an Exception.
+
+    Both engine functions wrap their API call in `except Exception` to degrade, which would happily
+    swallow an AssertionError raised here — a test that forgot to install a fake would then pass
+    quietly with {} instead of failing. Inheriting BaseException makes the guard punch through the
+    degradation handlers. (Verified: with an Exception subclass, the escape is silent.)
+    """
+
+
 @pytest.fixture(autouse=True)
 def no_real_client(monkeypatch):
     """Reset the cached client and make constructing a real one fail loudly.
@@ -82,11 +92,24 @@ def no_real_client(monkeypatch):
     monkeypatch.setattr(scene_analysis, "_openai_client", None)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("a real OpenAI client was constructed — install a fake")
+        raise RealClientForbidden("a real OpenAI client was constructed — install a fake")
 
     monkeypatch.setattr(scene_analysis, "OpenAI", forbidden)
     yield
     scene_analysis._openai_client = None
+
+
+def test_the_no_real_client_guard_actually_fires():
+    """Meta-test: proves the safety net above survives the degradation handlers.
+
+    Without this, a regression that made the guard swallowable would go unnoticed — and every
+    subsequent test could be silently exercising the fallback path instead of what it claims to.
+    """
+    with pytest.raises(RealClientForbidden):
+        _analyze_with_gpt("Zm9v")     # no fake installed on purpose
+
+    with pytest.raises(RealClientForbidden):
+        _moderate_image("Zm9v")
 
 
 def install(client, monkeypatch):
@@ -204,46 +227,79 @@ def test_missing_message_degrades(monkeypatch):
     assert _analyze_with_gpt("Zm9v") == {}
 
 
-# ── two gaps in the degradation promise, recorded rather than fixed ──────────
-
-def test_api_error_is_not_caught(monkeypatch):
-    """GAP: an API-level failure propagates instead of degrading.
-
-    _moderate_image wraps its call in try/except; _analyze_with_gpt guards only the JSON parse, so
-    a timeout, rate limit, auth failure or outage raises straight through analyze_scene and becomes
-    a 500 — even though every OpenCV feature was computed successfully and returning {} would have
-    produced a perfectly usable scan (scene_type "Unknown", no hashtags, filter "Vivid").
-
-    That contradicts the stated intent next to the parse guard: "must degrade — not 500 the whole
-    scan". Asserted as current behaviour so the gap is visible; invert this test when it is fixed.
-    """
-    install(FakeClient(completion_error=RuntimeError("upstream timeout")), monkeypatch)
-    with pytest.raises(RuntimeError, match="upstream timeout"):
-        _analyze_with_gpt("Zm9v")
-
+# ── API-level failures degrade too ──────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "content, parsed_type",
-    [("[1, 2, 3]", list), ('"just a string"', str), ("null", type(None)), ("42", int)],
+    "error",
+    [
+        RuntimeError("upstream timeout"),
+        ConnectionError("connection reset"),
+        ValueError("invalid api key"),
+        TimeoutError("deadline exceeded"),
+    ],
+    ids=["runtime", "connection", "value", "timeout"],
 )
-def test_non_object_json_is_returned_unchecked(monkeypatch, content, parsed_type):
-    """GAP: valid JSON that is not an object passes through untyped.
+def test_api_errors_degrade_instead_of_raising(monkeypatch, error):
+    """A dead API must cost the scene label, not the whole scan.
 
-    analyze_scene then calls .get() on it and raises AttributeError -> 500. In practice
-    response_format={"type": "json_object"} makes the API return an object, so this is defensive
-    depth rather than a live bug — but a function whose job is "never 500 on a bad completion" has
-    a hole in it. A one-line isinstance(parsed, dict) check would close both this and the case
-    below.
+    The OpenCV features are already computed by the time this runs, so raising here would discard
+    work that succeeded and break placement and framing — neither of which needs the model.
+    """
+    install(FakeClient(completion_error=error), monkeypatch)
+    assert _analyze_with_gpt("Zm9v") == {}
+
+
+def test_api_failure_is_logged(monkeypatch, caplog):
+    """Degrading silently would make an outage indistinguishable from bad model output."""
+    install(FakeClient(completion_error=RuntimeError("upstream timeout")), monkeypatch)
+    with caplog.at_level("WARNING", logger="daka.engine"):
+        _analyze_with_gpt("Zm9v")
+    assert any("vision call failed" in r.message for r in caplog.records)
+
+
+def test_moderation_failure_is_logged(monkeypatch, caplog):
+    """Fail-open is a safety bypass, so it must leave a trace."""
+    install(FakeClient(moderation_error=RuntimeError("service unavailable")), monkeypatch)
+    with caplog.at_level("WARNING", logger="daka.engine"):
+        assert _moderate_image("Zm9v") is True
+    assert any("moderation call failed" in r.message for r in caplog.records)
+
+
+def test_api_error_still_yields_a_usable_scan(monkeypatch, scene_image):
+    """End to end: the half of the product that does not need the model survives an outage."""
+    install(FakeClient(completion_error=RuntimeError("upstream timeout")), monkeypatch)
+    result = analyze_scene(scene_image)
+    assert result["scene_type"] == "Unknown"
+    assert result["hashtags"] == []
+    assert result["filter"] == "Vivid"
+    assert result["placement"]["x"] in (round(1 / 3, 3), round(2 / 3, 3))
+    assert result["lighting"]["quality"] in ("Good", "Fair", "Poor")
+    assert isinstance(result["blurry"], bool)
+
+
+# ── non-object JSON degrades too ────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "content", ["[1, 2, 3]", '"just a string"', "null", "42", "true"],
+    ids=["array", "string", "null", "number", "bool"],
+)
+def test_non_object_json_degrades(monkeypatch, content):
+    """Valid JSON that is not an object must not reach analyze_scene's gpt.get(...) calls.
+
+    response_format={"type": "json_object"} should make this unreachable in practice, so the
+    isinstance check is defensive depth — but without it the one function contracted never to 500
+    hands back a list, and .get() raises AttributeError.
     """
     install(FakeClient(completion=completion(content)), monkeypatch)
-    assert isinstance(_analyze_with_gpt("Zm9v"), parsed_type)
+    assert _analyze_with_gpt("Zm9v") == {}
 
 
-def test_non_object_json_breaks_analyze_scene(monkeypatch, scene_image):
-    """The consequence of the gap above, demonstrated end to end."""
+def test_non_object_json_still_yields_a_usable_scan(monkeypatch, scene_image):
+    """Previously raised AttributeError from analyze_scene; now falls back like any bad completion."""
     install(FakeClient(completion=completion("[1, 2, 3]")), monkeypatch)
-    with pytest.raises(AttributeError):
-        analyze_scene(scene_image)
+    result = analyze_scene(scene_image)
+    assert result["scene_type"] == "Unknown"
+    assert result["filter"] == "Vivid"
 
 
 # ── _encode_image ────────────────────────────────────────────────────────────
