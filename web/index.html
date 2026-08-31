@@ -145,15 +145,6 @@
     .coach-cue.show { display: flex; }
     #coachText { font-size: 15px; color: #fff; font-weight: 600; }
 
-    /* directional pulsing edge cue — the edge you should move toward glows */
-    #edgePulse { position: absolute; inset: 0; z-index: 22; pointer-events: none; display: none; }
-    #edgePulse.show { display: block; animation: edgePulseAnim 1.0s ease-in-out infinite; }
-    #edgePulse.dir-right { background: linear-gradient(to left,   rgba(230,126,34,0.65), transparent 34%); }
-    #edgePulse.dir-left  { background: linear-gradient(to right,  rgba(230,126,34,0.65), transparent 34%); }
-    #edgePulse.dir-up    { background: linear-gradient(to bottom, rgba(230,126,34,0.65), transparent 34%); }
-    #edgePulse.dir-down  { background: linear-gradient(to top,    rgba(230,126,34,0.65), transparent 34%); }
-    @keyframes edgePulseAnim { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
-
     .status-chip { position: absolute; top: calc(56px + env(safe-area-inset-top)); left: 14px; z-index: 26; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 100px; display: none; background: rgba(0,0,0,0.5); }
     .status-chip.show { display: inline-block; }
     .status-chip.warn { background: rgba(200,90,60,0.9); }
@@ -250,7 +241,6 @@
   <section id="camera" class="screen">
     <video id="video" autoplay playsinline muted></video>
     <canvas id="liveOverlay"></canvas>
-    <div id="edgePulse"></div>
     <div id="coachCue" class="coach-cue">
       <span id="coachText">Align the dots</span>
     </div>
@@ -358,36 +348,24 @@
     function scaledSize(w, h, cap) { const m = Math.max(w, h); if (m <= cap) return [w, h]; const r = cap / m; return [Math.round(w*r), Math.round(h*r)]; }
     function errMsg(e) { return e.name === 'AbortError' ? 'Server took too long — it may be waking up. Try again.' : (e.message || 'Analysis failed'); }
 
-    /* ── Coaching state: standing marker + two-dot framing lock ──
-       Two DIFFERENT things, deliberately kept apart (they were conflated before):
-         standPos — where the SUBJECT should stand IN FRAME. Comes from analysis.placement,
-                    whose x is already snapped to a rule-of-thirds line by the engine. It is a
-                    composition target, NOT a world point to aim the camera at — panning until
-                    it hits screen-centre would drag the subject to dead-centre and throw away
-                    the very thirds placement the engine solved for.
-         aim      — the framing that was actually analysed. Anchored at screen-centre at scan
-                    time and slid by yaw/pitch drift since, so "align the dots" means "hold the
-                    shot you scanned" while your subject walks into position. */
+    /* ── Coaching state ──
+       standPos is where the SUBJECT should stand IN FRAME, from analysis.placement, whose x the
+       engine has already snapped to a rule-of-thirds line. It is a composition target, not a point
+       to aim the camera at: panning until it reaches screen-centre would drag the subject to dead
+       centre and throw away the placement the engine solved for. So it is drawn at a fixed spot in
+       frame and deliberately does not move with the phone.
+
+       A two-dot "framing lock" used to live here, tracking drift from the scanned framing via
+       deviceorientation.alpha. Removed, because it could not work: a phone held upright with the
+       rear camera on the horizon sits at beta ~= 90 degrees, the gimbal-lock singularity of the
+       W3C Z-X-Y angle sequence, where alpha and gamma become degenerate. alpha then swings wildly
+       while the phone is nearly still, so the dots jumped and never settled. Not a tuning problem
+       and not a sign error — the sensor cannot separate yaw from roll in exactly the pose this app
+       is used in. Restoring a drift warning needs a different signal: integrating
+       devicemotion.rotationRate over the short scan-to-shoot window. Gravity alone cannot measure
+       yaw at all. The level slider is unaffected — it reads gravity, not orientation. */
     let coachingActive = false;
     let standPos = null;           // {x, y} from analysis.placement — where the subject stands
-    let scanOrient = null;         // {alpha, beta} device orientation captured as the aim baseline
-    let aimZoned = false;          // hysteretic "framing still matches the scan" latch
-
-    // Live device orientation (yaw/pitch), used to slide the drift dot as you pan the phone.
-    let liveOrient = { alpha: null, beta: null };
-    function angleDelta(a, b) { return ((a - b + 540) % 360) - 180; }  // shortest signed delta, handles 0/360 wrap
-
-    // Assumed camera field-of-view in degrees — a sensitivity scalar for how far the target dot
-    // slides per degree panned; doesn't need to be optically exact, just to feel 1:1 with the scene.
-    // Lower it to make the dot more sensitive to a given pan.
-    const AIM_FOV_H = 62, AIM_FOV_V = 42;
-    // Signs follow the W3C spec: alpha grows counter-clockwise (pan LEFT), and panning left makes
-    // the scene appear to slide RIGHT, so yaw is +1. beta grows as the rear camera aims UP, which
-    // slides the scene DOWN (y is down-positive), so pitch is +1 too.
-    // NOTE: alpha is inconsistent in the wild — some builds report a clockwise-positive compass
-    // heading instead. If the dot chases the wrong way on a real phone, flip AIM_YAW_SIGN to -1.
-    const AIM_YAW_SIGN = 1, AIM_PITCH_SIGN = 1;
-    const AIM_DEADBAND_IN = 0.05, AIM_DEADBAND_OUT = 0.09;
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -450,13 +428,11 @@
     const _fs = document.createElement('canvas'); _fs.width = 64; _fs.height = 64;
 
     /* ── Coaching helpers ── */
-    function setCue(text, arrow) {
-      const el = $('coachCue'), ep = $('edgePulse');
-      if (!text) { el.classList.remove('show'); ep.className = ''; return; }
+    function setCue(text) {
+      const el = $('coachCue');
+      if (!text) { el.classList.remove('show'); return; }
       $('coachText').textContent = text;
       el.classList.add('show');
-      // directional edge glow only (no in-your-face arrow): the edge you move toward pulses
-      ep.className = arrow ? ('show dir-' + arrow) : '';
     }
 
     // Standing marker: a footprint at the engine's placement point with a dotted body box above
@@ -476,29 +452,6 @@
       ctx.moveTo(fx + hw, fy); ctx.lineTo(fx + hw, fy - boxH);
       ctx.moveTo(fx - hw, fy - boxH); ctx.lineTo(fx + hw, fy - boxH);
       ctx.stroke();
-      ctx.restore();
-    }
-
-    // Two-dot framing lock: a fixed dot at screen-centre (where the camera points NOW) and a dot
-    // marking where the centre of the SCANNED frame has drifted to, joined by a line. Overlapping
-    // dots = you are still holding the framing that was analysed (see AIM_DEADBAND_* above).
-    function drawAimDots(tf, ctx, nx, ny, green) {
-      const cx = tf.PX(0.5), cy = tf.PY(0.5);
-      const tx = tf.PX(nx), ty = tf.PY(ny);
-      ctx.save();
-      ctx.strokeStyle = green ? 'rgba(102,187,106,0.75)' : 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx, ty); ctx.stroke();
-      ctx.setLineDash([]);
-      // centre dot — where the camera is actually pointed (always screen-centre)
-      ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2; ctx.stroke();
-      // target dot — where the AI wants the centre to be
-      ctx.beginPath(); ctx.arc(tx, ty, 11, 0, Math.PI * 2);
-      ctx.fillStyle = green ? 'rgba(102,187,106,0.9)' : 'rgba(197,122,82,0.9)';
-      ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
       ctx.restore();
     }
 
@@ -523,8 +476,8 @@
 
     function startLive() { if (liveActive) return; liveActive = true; liveLoop(); }
     function resetCoaching() {
-      coachingActive = false; standPos = null; scanOrient = null; aimZoned = false;
-      setCue(null, null);
+      coachingActive = false; standPos = null;
+      setCue(null);
     }
     function stopLive() {
       liveActive = false; if (liveRAF) cancelAnimationFrame(liveRAF); liveRAF = null;
@@ -552,41 +505,10 @@
         else s.classList.remove('show');
       }
 
-      // ── coaching overlay: standing marker (fixed) + framing lock (drift-tracked) ──
+      // ── coaching overlay: the standing marker, fixed in frame ──
       if (coachingActive && standPos) {
-        // lock the aim baseline to whatever orientation reading is available on the first frame
-        // after a scan (covers the case where the event hasn't fired yet at scan time)
-        if (!scanOrient && liveOrient.alpha != null) scanOrient = { alpha: liveOrient.alpha, beta: liveOrient.beta };
-        const haveAim = !!(scanOrient && liveOrient.alpha != null);
-
-        // Where the scanned frame's CENTRE now sits on screen. At scan time this is dead-centre;
-        // it slides as the phone drifts off the framing that was analysed.
-        let cnx = 0.5, cny = 0.5;
-        if (haveAim) {
-          const dYaw = angleDelta(liveOrient.alpha, scanOrient.alpha);
-          const dPitch = liveOrient.beta - scanOrient.beta;
-          cnx = Math.max(-0.3, Math.min(1.3, 0.5 + AIM_YAW_SIGN   * (dYaw   / AIM_FOV_H)));
-          cny = Math.max(-0.3, Math.min(1.3, 0.5 + AIM_PITCH_SIGN * (dPitch / AIM_FOV_V)));
-        }
-
-        // hysteresis: enter the deadband tight, only leave once well outside — kills flicker
-        const dist = Math.hypot(cnx - 0.5, cny - 0.5);
-        aimZoned = aimZoned ? dist < AIM_DEADBAND_OUT : dist < AIM_DEADBAND_IN;
-
-        drawStandMarker(tf, ctx, standPos.x, standPos.y, !haveAim || aimZoned);
-        // Only draw the lock when orientation is actually available — with no sensor the dots
-        // would sit permanently overlapped and read as a confirmation we haven't earned.
-        if (haveAim) drawAimDots(tf, ctx, cnx, cny, aimZoned);
-
-        // scan centre pushed off-frame → pulse the edge to pan back toward
-        const offX = cnx < 0.06 ? 'left' : cnx > 0.94 ? 'right' : null;
-        const offY = cny < 0.06 ? 'up' : cny > 0.94 ? 'down' : null;
-
-        if (!haveAim) setCue('Have them stand on the marker', null);
-        else if (aimZoned) setCue('Framing locked — stand on the marker', null);
-        else if (offX) setCue('Pan camera ' + offX, offX);
-        else if (offY) setCue('Pan camera ' + offY, offY);
-        else setCue('Recentre — align the dots', null);
+        drawStandMarker(tf, ctx, standPos.x, standPos.y, true);
+        setCue('Have them stand on the marker');
       }
     }
 
@@ -647,10 +569,9 @@
         // != null, not truthiness: a legitimate 0 coordinate must not fall through to the default.
         const p = analysisResult.placement;
         standPos = (p && p.x != null && p.y != null) ? { x: p.x, y: p.y } : { x: 1/3, y: 2/3 };
-        scanOrient = null; aimZoned = false;   // fresh aim baseline for this scan
         coachingActive = true;
         $('coachCue').classList.add('show');
-        setCue('Have them stand on the marker', null);
+        setCue('Have them stand on the marker');
         setCamState('tips');
       } catch (e) {
         setCamState('idle');
@@ -823,24 +744,6 @@
           DME.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
         });
       } else if (DME) {
-        begin();
-      }
-    })();
-
-    /* ── Aim-orientation listener: yaw (alpha) + pitch (beta) feed the two-dot aim overlay ── */
-    (function setupAimOrientation() {
-      const onOrient = (e) => {
-        if (e.alpha == null || e.beta == null) return;
-        liveOrient.alpha = e.alpha; liveOrient.beta = e.beta;
-      };
-      const begin = () => window.addEventListener('deviceorientation', onOrient);
-      const DOE = window.DeviceOrientationEvent;
-      if (DOE && typeof DOE.requestPermission === 'function') {
-        // iOS 13+: orientation permission must be requested from a user gesture
-        $('startBtn').addEventListener('click', () => {
-          DOE.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
-        });
-      } else if (DOE) {
         begin();
       }
     })();

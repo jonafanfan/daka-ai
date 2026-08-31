@@ -217,13 +217,18 @@ was judged better than refusing every scan during an outage, but it is a bypass.
 
 ## Known issues
 
-**The two-dot framing overlay is unreliable.** It reads yaw from `deviceorientation.alpha`, but a
-phone held upright with the rear camera on the horizon sits at `beta ≈ 90°` — exactly the gimbal-lock
-singularity of the W3C `Z-X'-Y''` angle sequence, where `alpha` and `gamma` become degenerate.
-`alpha` swings wildly while the phone barely moves, so the dots jump and won't settle. This is not a
-tuning problem and `AIM_YAW_SIGN` won't fix it. The standing marker and the level slider are
-unaffected and work fine. Options: drop the lock and keep the marker; use gravity for pitch/roll
-only (no yaw); or integrate `devicemotion.rotationRate` for true short-horizon yaw.
+**No "you've moved since scanning" warning.** There used to be a two-dot framing lock for this, but
+it was removed because it couldn't work. It read yaw from `deviceorientation.alpha`, and a phone
+held upright with the rear camera on the horizon sits at `beta ≈ 90°` — the gimbal-lock singularity
+of the W3C `Z-X'-Y''` angle sequence, where `alpha` and `gamma` become degenerate. `alpha` swung
+wildly while the phone was nearly still, so the dots jumped and never settled. Not a tuning problem
+and not a sign error: the sensor can't separate yaw from roll in exactly the pose this app is used
+in.
+
+Restoring the warning needs a different signal — integrating `devicemotion.rotationRate` over the
+short scan-to-shoot window. Gravity can measure pitch and roll reliably but cannot measure yaw at
+all, and panning is the main way people re-aim. Nothing else was affected: the standing marker and
+the level slider both read gravity, not orientation.
 
 **Extreme blur escapes the blur gate.** Past a point every edge smears below Canny's threshold, edge
 density hits zero, and the "too plain to judge" escape hatch passes the frame — a plain wall and a
