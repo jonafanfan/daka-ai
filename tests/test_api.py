@@ -241,7 +241,7 @@ def test_disallowed_origin_gets_no_cors_headers(client, ok_analysis):
 
 def test_netlify_production_origin_is_allowed_by_default():
     """The deployed frontend must work with no env var set in Render."""
-    assert "https://daka-ai.netlify.app" in api_server.ALLOWED_ORIGINS
+    assert "https://dakaba.netlify.app" in api_server.ALLOWED_ORIGINS
 
 
 def test_wildcard_origin_is_not_configured():
