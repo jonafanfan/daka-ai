@@ -15,7 +15,7 @@ Posing is left to the person being photographed.
 
 | | |
 |---|---|
-| Frontend | <https://daka-ai.netlify.app> (Netlify) |
+| Frontend | <https://dakaba.netlify.app> (Netlify) |
 | Backend | <https://daka-backend-9bfz.onrender.com> (Render, free plan) |
 | Health check | `GET /health` → `{"status": "ok"}` |
 
@@ -188,7 +188,7 @@ Set in the Render dashboard (Environment tab):
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `OPENAI_API_KEY` | **yes** | — | Never committed (`sync: false` in `render.yaml`). |
-| `ALLOWED_ORIGINS` | no | `https://daka-ai.netlify.app` | Comma-separated. **Replaces** the default rather than adding to it, so keep the production origin in the list. |
+| `ALLOWED_ORIGINS` | no | `https://dakaba.netlify.app` | Comma-separated. **Replaces** the default rather than adding to it, so keep the production origin in the list. |
 
 Dependencies are pinned exactly (`==`) in `requirements.txt`, and Python is pinned in
 `.python-version` — which CI reads too, so CI and production can't drift apart. To upgrade
