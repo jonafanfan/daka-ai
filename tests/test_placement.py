@@ -9,10 +9,13 @@ assess_lighting's tone mapping. These tests pin each direction down independentl
 import numpy as np
 import pytest
 
-from scene_analysis import _compute_placement
+from scene_analysis import PLACEMENT_REASONS, _compute_placement
 from conftest import LEFT_THIRD, RIGHT_THIRD, gray, saliency
 
-FALLBACK = {"x": RIGHT_THIRD, "y": RIGHT_THIRD}
+FALLBACK = {
+    "x": RIGHT_THIRD, "y": RIGHT_THIRD,
+    "reason": "default", "reason_text": PLACEMENT_REASONS["default"],
+}
 
 
 # ── the output shape is a contract: x snaps to a thirds line, y stays in a usable band ──

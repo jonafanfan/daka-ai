@@ -382,7 +382,7 @@ def test_response_keys_match_the_contract(monkeypatch, scene_image):
     install(FakeClient(completion=completion("{}")), monkeypatch)
     assert set(analyze_scene(scene_image)) == {
         "scene_type", "blueprint", "lighting", "blurry", "blur_var", "edge_sharpness",
-        "composition", "placement", "hashtags", "filter",
+        "composition", "placement", "camera_tilt", "hashtags", "filter",
     }
 
 
