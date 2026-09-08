@@ -42,8 +42,19 @@ MIN_EDGE_DENSITY = 0.008      # Canny edge fraction below which the scene is "to
 EDGE_SHARPNESS_MIN = 8.0      # mean |Laplacian| at edges below this = genuinely soft / blurred
 
 
+# Why the marker landed where it did. Kept short — this is drawn under the marker on a phone, so
+# anything much longer than this wraps or runs off the frame.
+PLACEMENT_REASONS = {
+    "backlight":        "Out of the window glare",
+    "light":            "Light falls on your face",
+    "balance":          "Balances the busy side",
+    "clean_background": "Cleaner background here",
+    "default":          "Classic rule-of-thirds spot",
+}
+
+
 def _compute_placement(gray, saliency_map) -> dict:
-    """Where a standing subject should stand -> normalized {x, y}, top-left origin.
+    """Where a standing subject should stand -> normalized {x, y}, top-left origin, plus WHY.
 
     Fuses cheap signals — visual BALANCE (counterweight the scene's focal mass), background
     CLEANLINESS (over the vertical band the body occupies), and LIGHT direction (stand on the
@@ -51,8 +62,14 @@ def _compute_placement(gray, saliency_map) -> dict:
     this scene, plus a hard BACKLIGHT VETO (never stand in front of a blown-out region, which
     would silhouette the subject). x snaps to a rule-of-thirds line. Never raises; falls back
     to {2/3, 2/3}.
+
+    `reason` names the signal that actually decided the side, so the client can explain the marker
+    rather than showing an unexplained dot. The work was already being done and thrown away.
     """
-    FALLBACK = {"x": round(2 / 3, 3), "y": round(2 / 3, 3)}
+    FALLBACK = {
+        "x": round(2 / 3, 3), "y": round(2 / 3, 3),
+        "reason": "default", "reason_text": PLACEMENT_REASONS["default"],
+    }
     try:
         sal = np.asarray(saliency_map, dtype=np.float32)
         g = np.asarray(gray, dtype=np.float32)
@@ -65,14 +82,16 @@ def _compute_placement(gray, saliency_map) -> dict:
         saliency_reliable = sal.std() > 0.010 and (float(sal.max()) - float(sal.min())) > 0.05
         light_reliable = float(g.mean()) > 40.0
 
-        votes = 0.0  # +ve -> right (2/3), -ve -> left (1/3)
+        # Each signal's signed vote, kept separately rather than summed into one number, so the
+        # winning signal can be named afterwards. +ve -> right (2/3), -ve -> left (1/3).
+        contributions = {}
 
         if saliency_reliable:
             # Balance: stand opposite the scene's horizontal focal centre of mass.
             col = sal.sum(axis=0)
             tot = float(col.sum())
             cx = (float((np.arange(W) * col).sum() / tot) / W) if tot > 1e-6 else 0.5
-            votes += 1.0 if cx < 0.5 else -1.0
+            contributions["balance"] = 1.0 if cx < 0.5 else -1.0
             # Cleanliness: prefer the side whose body-band background is emptier.
             top = int(H * 0.30)
 
@@ -80,24 +99,29 @@ def _compute_placement(gray, saliency_map) -> dict:
                 c = int(nx * W)
                 return float(sal[top:, max(0, c - W // 6):min(W, c + W // 6)].mean())
 
-            votes += 1.0 if _clutter(X_RIGHT) < _clutter(X_LEFT) else -1.0
+            contributions["clean_background"] = 1.0 if _clutter(X_RIGHT) < _clutter(X_LEFT) else -1.0
 
         if light_reliable:
             # Light: stand on the DIMMER side so the brighter side lights the face.
             lb = float(g[:, :W // 2].mean())
             rb = float(g[:, W // 2:].mean())
             if abs(rb - lb) / (lb + rb + 1e-6) > 0.04:
-                votes += 1.2 if lb > rb else -1.2
+                contributions["light"] = 1.2 if lb > rb else -1.2
+
+        votes = sum(contributions.values())
 
         # Backlight veto: a blown-out half silhouettes the subject -> forbid standing there.
         hot = g > 245
         lhot = float(hot[:, :W // 2].mean())
         rhot = float(hot[:, W // 2:].mean())
         HOT = 0.06
+        reason = None
         if rhot > HOT and rhot > lhot * 1.5:
             right = False
+            reason = "backlight"
         elif lhot > HOT and lhot > rhot * 1.5:
             right = True
+            reason = "backlight"
         elif votes > 0.15:
             right = True
         elif votes < -0.15:
@@ -105,6 +129,12 @@ def _compute_placement(gray, saliency_map) -> dict:
         else:
             right = not (rhot > lhot)   # no confident signal: avoid the hotter half; tie -> right
         x = X_RIGHT if right else X_LEFT
+
+        if reason is None:
+            # Credit the strongest signal that actually pointed the way we went. A signal that
+            # voted the other way and lost is not the reason, even if it was the loudest.
+            agreeing = {k: abs(v) for k, v in contributions.items() if v != 0 and (v > 0) == right}
+            reason = max(agreeing, key=agreeing.get) if agreeing else "default"
 
         # Headroom: adapt y to where the saliency mass sits vertically.
         y = 2 / 3
@@ -114,9 +144,49 @@ def _compute_placement(gray, saliency_map) -> dict:
                 y = 0.70
             elif float(sal[2 * H // 3:].mean()) > 1.8 * m:
                 y = 0.62
-        return {"x": round(float(x), 3), "y": round(min(0.72, max(0.60, y)), 3)}
+        return {
+            "x": round(float(x), 3),
+            "y": round(min(0.72, max(0.60, y)), 3),
+            "reason": reason,
+            "reason_text": PLACEMENT_REASONS[reason],
+        }
     except Exception:
         return FALLBACK
+
+
+def _detect_dead_space(saliency_map) -> dict:
+    """Is a third of the frame carrying nothing? Then aim the camera off it.
+
+    Returns {"direction": "up" | "down" | "ok", "reason": str}. "down" means aim LOWER, because the
+    dead space is above — blank ceiling or featureless sky eating the top of the shot. Advice no
+    phone camera gives you, and it costs nothing: the saliency map is already computed for
+    placement. Never raises.
+    """
+    OK = {"direction": "ok", "reason": ""}
+    try:
+        sal = np.asarray(saliency_map, dtype=np.float32)
+        if sal.ndim != 2 or sal.size == 0 or sal.shape[0] < 3:
+            return OK
+        # Same reliability gate as placement: on a flat, low-contrast map the thirds are all noise
+        # and any comparison between them is meaningless.
+        if not (sal.std() > 0.010 and float(sal.max()) - float(sal.min()) > 0.05):
+            return OK
+
+        H = sal.shape[0]
+        top = float(sal[:H // 3].mean())
+        mid = float(sal[H // 3:2 * H // 3].mean())
+        bot = float(sal[2 * H // 3:].mean())
+
+        # A band is "dead" only if it is far emptier than the rest of the frame AND emptier than
+        # the opposite band — otherwise a uniformly plain scene would trigger it constantly.
+        DEAD = 0.45
+        if top < DEAD * ((mid + bot) / 2) and top < bot:
+            return {"direction": "down", "reason": "Empty space above — aim a little lower"}
+        if bot < DEAD * ((top + mid) / 2) and bot < top:
+            return {"direction": "up", "reason": "Empty floor below — aim a little higher"}
+        return OK
+    except Exception:
+        return OK
 
 
 def _moderate_image(b64: str) -> bool:
@@ -241,6 +311,9 @@ def extract_features(image_path: str) -> dict:
     # Suggested subject placement (normalized, top-left origin): balance / background cleanliness /
     # light direction fused, with a backlight veto. See _compute_placement.
     placement = _compute_placement(gray, saliency_map)
+    # Dead-space check: reuses the same saliency map, so this costs one more pass over an array
+    # that is already in memory.
+    camera_tilt = _detect_dead_space(saliency_map)
 
     left_weight = float(np.mean(saliency_map[:, :w // 2]))
     right_weight = float(np.mean(saliency_map[:, w // 2:]))
@@ -270,6 +343,7 @@ def extract_features(image_path: str) -> dict:
         "alignment": alignment,
         "balance": float(balance),
         "placement": placement,
+        "camera_tilt": camera_tilt,
         "width": int(w),
         "height": int(h),
     }
@@ -355,6 +429,7 @@ def analyze_scene(image_path: str) -> dict:
         "edge_sharpness": round(features["edge_sharpness"], 2),  # diagnostic — for tuning the gate
         "composition":  assess_composition(features),
         "placement":    features["placement"],
+        "camera_tilt":  features["camera_tilt"],
         "hashtags":     gpt.get("hashtags", []),
         "filter":       filter_name,
     }

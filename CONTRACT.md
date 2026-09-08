@@ -1,8 +1,13 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.11` (shipped)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.12` (shipped)
 
 > **Recent changes**
+>
+> - **`0.12` — the engine now explains itself (additive).** `placement` gains `reason` (closed
+>   enum) and `reason_text` (short display string) naming the signal that actually decided the
+>   side, and a new top-level `camera_tilt` reports dead space in the frame. Purely additive:
+>   existing consumers reading `placement.x` / `.y` are unaffected. See §3.1 and §3.7.
 >
 > - **`0.11` — a failing vision call no longer `500`s the scan.** Previously an OpenAI timeout,
 >   rate limit, auth failure or outage propagated and became a `500`, discarding OpenCV work that
@@ -82,7 +87,12 @@ Every field below is always present on a `200`. There are no optional keys.
   "blur_var":       184.3,      // diagnostic — for tuning the blur gate
   "edge_sharpness": 21.47,      // diagnostic — for tuning the blur gate
 
-  "placement":      { "x": 0.667, "y": 0.667 },
+  "placement":      { "x": 0.667, "y": 0.667,
+                      "reason": "light",
+                      "reason_text": "Light falls on your face" },
+
+  "camera_tilt":    { "direction": "down",
+                      "reason": "Empty space above — aim a little lower" },
 
   "hashtags":       ["#cafevibes", "#coffeetime", "#goldenhour"],
 
@@ -99,9 +109,24 @@ Every field below is always present on a `200`. There are no optional keys.
 | Field | Type | Notes |
 |---|---|---|
 | `x` | number | **snapped to a rule-of-thirds line: `0.333` or `0.667`** |
-| `y` | number | clamped to `[0.60, 0.72]` — adapts to where saliency mass sits vertically |
+| `y` | number | one of `0.62`, `0.667`, `0.70` — adapts to where saliency mass sits vertically |
+| `reason` | enum | which signal decided the side — closed set below |
+| `reason_text` | string | short display string for `reason`, ≤ 34 chars, safe to show verbatim |
 
-Computed by [`_compute_placement`](scene_analysis.py#L39-L113), which fuses three gated signals —
+Closed `reason` set — the client may switch on these, and must fall back to showing `reason_text`
+for anything unrecognised:
+
+```
+backlight   light   balance   clean_background   default
+```
+
+`reason` names a signal that voted **the way the marker actually went**. A signal that argued the
+other way and lost is never credited, because explaining the marker with the one argument against
+its position would be worse than saying nothing. `backlight` always wins when the veto fires, since
+it is a hard constraint rather than a vote. `default` means the tie-break decided and no signal can
+honestly be credited.
+
+Computed by [`_compute_placement`](scene_analysis.py#L56-L154), which fuses three gated signals —
 visual **balance** (stand opposite the scene's focal mass), background **cleanliness** (prefer the
 side whose body-band is emptier), and **light direction** (stand on the dimmer side so light falls
 on the face) — plus a hard **backlight veto** so the subject is never placed in front of a
@@ -150,6 +175,22 @@ judges the sharpness of the edges that actually exist, and gives a near-featurel
 benefit of the doubt. Thresholds are lenient — over-rejecting is the worse failure — and tunable
 against `blur_var` / `edge_sharpness` from real photos. See
 [`scene_analysis.py:29-37`](scene_analysis.py#L29-L37).
+
+### 3.7 `camera_tilt` — aim off the dead third *(drives the tilt cue)*
+
+| Field | Type | Notes |
+|---|---|---|
+| `direction` | enum | `"up"` \| `"down"` \| `"ok"` — which way to aim the camera |
+| `reason` | string | short display string; **empty when `direction` is `"ok"`** |
+
+`"down"` means aim **lower**, because the dead space is *above* — blank ceiling or featureless sky
+eating the top of the frame. Computed by comparing the visual interest in the top, middle and
+bottom thirds of the saliency map placement already builds, so it costs one extra pass over an
+array in memory and no extra tokens.
+
+Deliberately conservative: a band must carry under **45%** of the rest of the frame's interest
+*and* be emptier than the opposite band, and the whole check is skipped on a flat, low-contrast
+map. Otherwise the cue fires on ordinary scenes and gets ignored.
 
 ### 3.4 `composition` — descriptive assessment
 

@@ -128,7 +128,7 @@ def test_tilted_lines_reduce_alignment(tmp_path):
 
 def test_placement_is_included_and_well_formed(tmp_path):
     f = extract_features(write(tmp_path, checkerboard()))
-    assert set(f["placement"]) == {"x", "y"}
+    assert set(f["placement"]) == {"x", "y", "reason", "reason_text"}
     assert f["placement"]["x"] in (round(1 / 3, 3), round(2 / 3, 3))
     assert 0.60 <= f["placement"]["y"] <= 0.72
 
@@ -139,7 +139,7 @@ def test_all_documented_keys_are_present(tmp_path):
     f = extract_features(write(tmp_path, checkerboard()))
     assert set(f) == {
         "brightness", "color_ratio", "sharpness", "blur_var", "edge_sharpness", "blurry",
-        "rule_of_thirds", "alignment", "balance", "placement", "width", "height",
+        "rule_of_thirds", "alignment", "balance", "placement", "camera_tilt", "width", "height",
     }
 
 

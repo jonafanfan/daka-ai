@@ -132,6 +132,9 @@
     #camLevelDot.on { background: #66bb6a; box-shadow: 0 0 10px rgba(102,187,106,.7); }
     #camLevelVal { font: 12px/1 monospace; color: rgba(255,255,255,.7); min-width: 34px; text-align: center; }
     #camLevelVal.on { color: #66bb6a; }
+    /* while a straighten cue is showing, the bar is the thing to look at */
+    #camLevel.needs-fix #camLevelTrack { background: rgba(230,126,34,0.55); }
+    #camLevel.needs-fix #camLevelDot { background: #E67E22; box-shadow: 0 0 10px rgba(230,126,34,.8); }
 
     /* live detection overlay + chips */
     #liveOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 23; }
@@ -242,7 +245,7 @@
     <video id="video" autoplay playsinline muted></video>
     <canvas id="liveOverlay"></canvas>
     <div id="coachCue" class="coach-cue">
-      <span id="coachText">Align the dots</span>
+      <span id="coachText">Have them stand on the marker</span>
     </div>
 
     <div class="status-chip" id="statusChip"></div>
@@ -366,6 +369,13 @@
        yaw at all. The level slider is unaffected — it reads gravity, not orientation. */
     let coachingActive = false;
     let standPos = null;           // {x, y} from analysis.placement — where the subject stands
+    let standReason = '';          // placement.reason_text — why the engine picked that spot
+    let tiltHint = null;           // camera_tilt.reason when a third of the frame is dead space
+    let needsStraightening = false;// the scanned frame had a crooked horizon
+    // Live roll in degrees, from gravity. Gravity is reliable for roll (unlike the compass, which
+    // is degenerate in this pose — see the note above), so this is what tells us the user has
+    // actually straightened up.
+    let liveLean = 0;
 
     /* ── Camera state (idle | loading | tips) ── */
     function setCamState(s) {
@@ -438,7 +448,7 @@
     // Standing marker: a footprint at the engine's placement point with a dotted body box above
     // it, drawn at a FIXED spot in frame. This is the composition — it does not move with the
     // phone, because the subject is meant to stand on the thirds line of the shot you scanned.
-    function drawStandMarker(tf, ctx, x, y, green) {
+    function drawStandMarker(tf, ctx, x, y, green, label) {
       const fx = tf.PX(x), fy = tf.PY(y);
       const rw = tf.SY(0.09), rh = tf.SY(0.028), hw = rw * 0.9, boxH = tf.SY(0.6);
       ctx.save();
@@ -453,6 +463,21 @@
       ctx.moveTo(fx - hw, fy - boxH); ctx.lineTo(fx + hw, fy - boxH);
       ctx.stroke();
       ctx.restore();
+
+      // The reason the engine chose this spot, under the footprint. Clamped horizontally so a
+      // marker near the frame edge does not push its own caption off screen.
+      if (label) {
+        ctx.save();
+        ctx.font = '600 ' + Math.max(12, Math.round(tf.H * 0.021)) + 'px Georgia, "Noto Serif SC", serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        const halfText = ctx.measureText(label).width / 2 + 10;
+        ctx.fillText(label, Math.min(tf.W - halfText, Math.max(halfText, fx)), fy + rh + 10);
+        ctx.restore();
+      }
     }
 
     function coverTF(video, canvas) {
@@ -476,7 +501,9 @@
 
     function startLive() { if (liveActive) return; liveActive = true; liveLoop(); }
     function resetCoaching() {
-      coachingActive = false; standPos = null;
+      coachingActive = false; standPos = null; standReason = '';
+      tiltHint = null; needsStraightening = false;
+      $('camLevel').classList.remove('needs-fix');
       setCue(null);
     }
     function stopLive() {
@@ -505,10 +532,22 @@
         else s.classList.remove('show');
       }
 
-      // ── coaching overlay: the standing marker, fixed in frame ──
+      // ── coaching overlay: the standing marker, plus at most one correction ──
       if (coachingActive && standPos) {
-        drawStandMarker(tf, ctx, standPos.x, standPos.y, true);
-        setCue('Have them stand on the marker');
+        // Latch off once they have actually levelled up, so a later wobble does not start nagging
+        // again. With no motion sensor liveLean stays 0, which clears it immediately — the right
+        // degradation: never nag about something we cannot measure.
+        if (needsStraightening && Math.abs(liveLean) <= 3) needsStraightening = false;
+        const straighten = needsStraightening;
+
+        drawStandMarker(tf, ctx, standPos.x, standPos.y, !straighten, standReason);
+        $('camLevel').classList.toggle('needs-fix', straighten);
+
+        // Priority: fix the camera before placing the person. A crooked or badly aimed frame
+        // makes the marker's advice moot, and stacking cues just gets ignored.
+        if (straighten) setCue('Straighten the camera');
+        else if (tiltHint) setCue(tiltHint);
+        else setCue('Have them stand on the marker');
       }
     }
 
@@ -569,6 +608,18 @@
         // != null, not truthiness: a legitimate 0 coordinate must not fall through to the default.
         const p = analysisResult.placement;
         standPos = (p && p.x != null && p.y != null) ? { x: p.x, y: p.y } : { x: 1/3, y: 2/3 };
+        standReason = (p && p.reason_text) || '';
+
+        // camera_tilt is advisory: only cue when the engine actually found dead space AND gave
+        // wording for it. Older responses have neither.
+        const tilt = analysisResult.camera_tilt;
+        tiltHint = (tilt && tilt.direction && tilt.direction !== 'ok' && tilt.reason) ? tilt.reason : null;
+
+        // composition.horizon describes the SCANNED frame, not the phone right now — so it only
+        // opens the prompt. The live gravity reading decides when it is satisfied.
+        const horizon = (analysisResult.composition || {}).horizon;
+        needsStraightening = !!horizon && horizon !== 'Level';
+
         coachingActive = true;
         $('coachCue').classList.add('show');
         setCue('Have them stand on the marker');
@@ -729,6 +780,7 @@
         const tilt = Math.acos(Math.min(1, Math.abs(y) / g)) * 180 / Math.PI;
         // roll (horizon lean) is what positions the dot; tilt is what's read out as degrees
         const lean = Math.atan2(x, Math.abs(y)) * 180 / Math.PI;
+        liveLean = lean;
         const p = Math.max(0, Math.min(100, ((lean / 30) + 1) * 50));
         const upright = tilt < 3;                                        // green anywhere in 0–3°
         d.style.left = p + '%';
