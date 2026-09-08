@@ -193,3 +193,41 @@ def test_direction_is_always_from_the_closed_set():
     for _ in range(40):
         s = band(rng.uniform(0, 1), rng.uniform(0, 1), rng.uniform(0, 1))
         assert _detect_dead_space(s)["direction"] in ("up", "down", "ok")
+
+
+# ── placement_hint: the model's depth sentence ───────────────────────────────
+#
+# A flat marker says WHERE across the frame but nothing about how far INTO the scene to stand,
+# and the geometry cannot know there is a doorway to stand in front of. That is the model's job,
+# so this is the one field here that is free text rather than a closed set — hence the validation.
+
+from scene_analysis import _clean_hint
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Stand in front of the blue door", "Stand in front of the blue door"),
+        ("Stand just behind the low wall.", "Stand just behind the low wall"),   # trailing stop
+        ("  Stand   beside  the window  ", "Stand beside the window"),           # collapsed space
+        ("Stand\nlevel with the bench", "Stand level with the bench"),           # newline
+    ],
+)
+def test_usable_hints_are_kept(raw, expected):
+    assert _clean_hint(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "", "   ", 42, [], {}, ".", "x" * 61],
+    ids=["none", "empty", "spaces", "int", "list", "dict", "just-a-stop", "too-long"],
+)
+def test_unusable_hints_become_empty(raw):
+    """The client renders this verbatim above the shutter, so anything doubtful must vanish.
+    A sentence that overflows the panel is worse than no sentence at all."""
+    assert _clean_hint(raw) == ""
+
+
+def test_the_length_cap_is_a_boundary_not_a_guess():
+    assert _clean_hint("x" * 60) == "x" * 60
+    assert _clean_hint("x" * 61) == ""

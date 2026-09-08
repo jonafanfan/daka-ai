@@ -179,6 +179,15 @@
     }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
+    /* The one line of plain-English placement advice. Sits directly above the shutter because
+       that is where the eye already goes, and because the canvas caption under the marker cannot
+       express depth. */
+    .place-hint {
+      color: #fff; font-size: 15px; line-height: 1.35; text-align: center;
+      padding: 2px 4px 10px; text-wrap: balance;
+    }
+    .place-hint:empty { display: none; }
+
     .take-photo { width: 100%; height: 46px; background: var(--accent); color: #fff; border: none; font-family: inherit; font-size: 15px; font-weight: 600; border-radius: 100px; margin-bottom: 6px; }
     .take-photo:active { transform: scale(0.97); }
     .rescan { display: block; text-align: center; color: rgba(255,255,255,0.6); font-size: 13px; padding: 4px; }
@@ -277,6 +286,7 @@
 
     <!-- tips panel -->
     <div class="tip-panel" id="tipPanel">
+      <div class="place-hint" id="placeHint"></div>
       <button class="take-photo" id="takePhotoBtn">Take Photo</button>
       <span class="rescan" id="rescanBtn">Scan again</span>
     </div>
@@ -369,9 +379,85 @@
        yaw at all. The level slider is unaffected — it reads gravity, not orientation. */
     let coachingActive = false;
     let standPos = null;           // {x, y} from analysis.placement — where the subject stands
+
+    /* ── Subject detection (MediaPipe pose, lazy-loaded) ──
+       We track the ANKLES, not the body centre: the marker is a footprint, so where someone is
+       standing is a question about their feet. Everything here degrades to null — if the CDN is
+       blocked, the model fails to load, or a frame throws, the app falls back to the static prompt
+       it had before rather than breaking. */
+    const tracker = { landmarker: null, loading: false, failed: false };
+    const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+
+    async function loadTracker() {
+      if (tracker.landmarker || tracker.loading || tracker.failed) return;
+      tracker.loading = true;
+      try {
+        const vision = await import(MP);
+        const fileset = await vision.FilesetResolver.forVisionTasks(MP + '/wasm');
+        const opts = (delegate) => ({
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/' +
+                            'pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+            delegate,
+          },
+          runningMode: 'VIDEO',
+          numPoses: 1,
+        });
+        // GPU first, CPU as the fallback — some phones refuse the GPU delegate outright.
+        try { tracker.landmarker = await vision.PoseLandmarker.createFromOptions(fileset, opts('GPU')); }
+        catch (e) { tracker.landmarker = await vision.PoseLandmarker.createFromOptions(fileset, opts('CPU')); }
+      } catch (e) {
+        tracker.failed = true;      // no subject cues; the rest of the app is unaffected
+      } finally {
+        tracker.loading = false;
+      }
+    }
+
+    // Smoothed subject position, in CROP coordinates. Raw per-frame landmarks jitter enough to
+    // make cues flicker, so each reading is eased toward rather than snapped to.
+    const subject = { x: 0.5, y: 0.66, seen: false, lostAt: 0 };
+    let lastDetect = 0;
+
+    function detectSubject(video, ts) {
+      if (!tracker.landmarker || !video.videoWidth) return;
+      // ~10fps is plenty for coaching a person who is walking, and leaves the phone alone.
+      if (ts - lastDetect < 100) return;
+      lastDetect = ts;
+
+      let res;
+      try { res = tracker.landmarker.detectForVideo(video, ts); } catch (e) { return; }
+      const poses = (res && res.landmarks) || [];
+      if (!poses.length) {
+        if (!subject.lostAt) subject.lostAt = ts;
+        if (ts - subject.lostAt > 600) subject.seen = false;   // brief dropouts are not "gone"
+        return;
+      }
+      subject.lostAt = 0;
+
+      const lm = poses[0];
+      const mid = (a, b) => (a && b) ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : null;
+      // ankles -> hips -> nose: the best available stand-in for "where they are standing"
+      const feet = mid(lm[27], lm[28]) || mid(lm[23], lm[24]) || lm[0];
+      if (!feet) return;
+
+      // Landmarks are normalised to the FULL video frame, but the marker lives in the visible
+      // crop. Converting is not optional: skipping it is the same mistake that put the marker off
+      // screen, just in the other direction.
+      const c = visibleCrop(video);
+      const cx = (feet.x * video.videoWidth - c.sx) / c.sw;
+      const cy = (feet.y * video.videoHeight - c.sy) / c.sh;
+      if (!isFinite(cx) || !isFinite(cy)) return;
+
+      if (!subject.seen) { subject.x = cx; subject.y = cy; }
+      subject.x += (cx - subject.x) * 0.35;
+      subject.y += (cy - subject.y) * 0.35;
+      subject.seen = true;
+    }
+
     let standReason = '';          // placement.reason_text — why the engine picked that spot
     let tiltHint = null;           // camera_tilt.reason when a third of the frame is dead space
     let needsStraightening = false;// the scanned frame had a crooked horizon
+    let onMarker = false;          // is someone standing on the spot right now
     // Live roll in degrees, from gravity. Gravity is reliable for roll (unlike the compass, which
     // is degenerate in this pose — see the note above), so this is what tells us the user has
     // actually straightened up.
@@ -399,6 +485,7 @@
         setCamState('idle');
         show('camera');
         detectLenses();
+        loadTracker();          // in the background, so it is ready by the time they scan
         startLive();
       } catch (e) {
         hasCamera = false;
@@ -472,7 +559,7 @@
       // marker near the frame edge does not push its own caption off screen.
       if (label) {
         ctx.save();
-        ctx.font = '600 ' + Math.max(12, Math.round(tf.H * 0.021)) + 'px Georgia, "Noto Serif SC", serif';
+        ctx.font = '600 ' + Math.max(12, Math.round(H * 0.021)) + 'px Georgia, "Noto Serif SC", serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.shadowColor = 'rgba(0,0,0,0.8)';
@@ -506,6 +593,7 @@
     function startLive() { if (liveActive) return; liveActive = true; liveLoop(); }
     function resetCoaching() {
       coachingActive = false; standPos = null; standReason = '';
+      subject.seen = false; subject.lostAt = 0; onMarker = false;
       tiltHint = null; needsStraightening = false;
       $('camLevel').classList.remove('needs-fix');
       setCue(null);
@@ -536,21 +624,55 @@
         else s.classList.remove('show');
       }
 
-      // ── coaching overlay: the standing marker, plus at most one correction ──
+      // ── coaching overlay: subject first, then position, then the camera ──
+      // Wrapped because this block both draws AND drives the cue text. A single runtime error in
+      // the drawing half used to escape the whole block, so setCue never ran and every cue froze
+      // on whatever the HTML shipped with — silently, and only on a real device. Cues are the
+      // product here; they must survive a bad frame.
+      try {
       if (coachingActive && standPos) {
+        detectSubject(video, ts);
+
+        // Hysteresis: it takes less to stay on the marker than to get there, so someone standing
+        // still on the edge of the zone does not flicker between two cues.
+        const dx = subject.x - standPos.x;
+        const dy = subject.y - standPos.y;
+        const limit = onMarker ? 0.13 : 0.09;
+        onMarker = subject.seen && Math.abs(dx) < limit && Math.abs(dy) < limit + 0.03;
+
         // Latch off once they have actually levelled up, so a later wobble does not start nagging
         // again.
         if (needsStraightening && Math.abs(liveLean) <= 3) needsStraightening = false;
-        const straighten = needsStraightening;
 
-        drawStandMarker(tf.W, tf.H, ctx, standPos.x, standPos.y, !straighten, standReason);
-        $('camLevel').classList.toggle('needs-fix', straighten);
+        // Green only once someone is actually standing on it. Orange the rest of the time, so the
+        // marker reads as "not yet" at a glance rather than needing to be read.
+        drawStandMarker(tf.W, tf.H, ctx, standPos.x, standPos.y, onMarker, standReason);
+        $('camLevel').classList.toggle('needs-fix', onMarker && needsStraightening);
 
-        // Priority: fix the camera before placing the person. A crooked or badly aimed frame
-        // makes the marker's advice moot, and stacking cues just gets ignored.
-        if (straighten) setCue('Straighten the camera');
-        else if (tiltHint) setCue(tiltHint);
-        else setCue('Have them stand on the marker');
+        // One cue at a time, in the order the work actually happens: get someone in shot, get
+        // them on the spot, then fine-tune the camera. Camera tweaks come last because they are
+        // quick, and because there is no point levelling a frame nobody is standing in.
+        if (tracker.failed || !tracker.landmarker) {
+          // No detection available — fall back to the static prompt rather than guessing.
+          setCue(tracker.failed ? 'Have them stand on the marker' : 'Getting ready…');
+        } else if (!subject.seen) {
+          setCue('Step into frame');
+        } else if (Math.abs(dx) >= limit) {
+          setCue(dx > 0 ? 'Move left' : 'Move right');
+        } else if (Math.abs(dy) >= limit + 0.03) {
+          // Feet higher in frame than the marker means further away, and vice versa.
+          setCue(dy < 0 ? 'Come closer' : 'Step back');
+        } else if (needsStraightening) {
+          setCue('Straighten the camera');
+        } else if (tiltHint) {
+          setCue(tiltHint);
+        } else {
+          setCue('Perfect — take the photo');
+        }
+      }
+      } catch (err) {
+        if (!liveLoop.warned) { liveLoop.warned = true; console.error('coaching overlay:', err); }
+        setCue('Have them stand on the marker');   // degrade to the static prompt, keep shooting
       }
     }
 
@@ -654,6 +776,10 @@
 
     function renderTips(r) {
       $('sceneBadgeTop').textContent = r.scene_type || 'Scene';
+      // Depth is the thing a flat marker cannot show: it says WHERE across the frame but nothing
+      // about how far into the scene to stand. This is the model's job — it is the only part of
+      // the system that knows there is a doorway or a bench to stand in front of.
+      $('placeHint').textContent = r.placement_hint || '';
     }
 
     /* ── Stage 2: take the keeper photo → results ── */
