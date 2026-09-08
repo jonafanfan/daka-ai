@@ -391,6 +391,7 @@
     }
 
     async function startCamera() {
+      await requestMotion();     // must precede getUserMedia — see requestMotion
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
         $('video').srcObject = stream;
@@ -448,9 +449,12 @@
     // Standing marker: a footprint at the engine's placement point with a dotted body box above
     // it, drawn at a FIXED spot in frame. This is the composition — it does not move with the
     // phone, because the subject is meant to stand on the thirds line of the shot you scanned.
-    function drawStandMarker(tf, ctx, x, y, green, label) {
-      const fx = tf.PX(x), fy = tf.PY(y);
-      const rw = tf.SY(0.09), rh = tf.SY(0.028), hw = rw * 0.9, boxH = tf.SY(0.6);
+    // Coordinates come back from the engine relative to the SCANNED image, which is now exactly
+    // the visible crop — so normalised coords map straight onto the overlay canvas. No cover
+    // transform here on purpose: applying one would re-introduce the off-screen marker.
+    function drawStandMarker(W, H, ctx, x, y, green, label) {
+      const fx = x * W, fy = y * H;
+      const rw = 0.09 * H, rh = 0.028 * H, hw = rw * 0.9, boxH = 0.6 * H;
       ctx.save();
       ctx.strokeStyle = green ? 'rgba(102,187,106,0.9)' : 'rgba(197,122,82,0.9)';
       ctx.fillStyle = green ? 'rgba(102,187,106,0.22)' : 'rgba(197,122,82,0.18)';
@@ -475,7 +479,7 @@
         ctx.shadowBlur = 6;
         ctx.fillStyle = 'rgba(255,255,255,0.95)';
         const halfText = ctx.measureText(label).width / 2 + 10;
-        ctx.fillText(label, Math.min(tf.W - halfText, Math.max(halfText, fx)), fy + rh + 10);
+        ctx.fillText(label, Math.min(W - halfText, Math.max(halfText, fx)), fy + rh + 10);
         ctx.restore();
       }
     }
@@ -535,12 +539,11 @@
       // ── coaching overlay: the standing marker, plus at most one correction ──
       if (coachingActive && standPos) {
         // Latch off once they have actually levelled up, so a later wobble does not start nagging
-        // again. With no motion sensor liveLean stays 0, which clears it immediately — the right
-        // degradation: never nag about something we cannot measure.
+        // again.
         if (needsStraightening && Math.abs(liveLean) <= 3) needsStraightening = false;
         const straighten = needsStraightening;
 
-        drawStandMarker(tf, ctx, standPos.x, standPos.y, !straighten, standReason);
+        drawStandMarker(tf.W, tf.H, ctx, standPos.x, standPos.y, !straighten, standReason);
         $('camLevel').classList.toggle('needs-fix', straighten);
 
         // Priority: fix the camera before placing the person. A crooked or badly aimed frame
@@ -555,26 +558,43 @@
     function closeGate() { $('gateBlock').classList.remove('show'); setCamState('idle'); }
 
     /* ── Frame grabbing ── */
+    // The <video> is displayed with object-fit: cover, so the viewfinder shows only a CENTRE CROP
+    // of the camera track. Everything downstream has to agree with that crop, or the app is
+    // reasoning about a picture nobody can see.
+    //
+    // This was a real bug, not a nicety. The scan used to send the whole track: with a landscape
+    // 1920x1080 track on a portrait phone only ~26% of the analysed width was on screen, so
+    // placement x=0.667 was computed from scenery outside the frame and drawn hundreds of pixels
+    // off the right edge — invisible, along with its caption. The saved photo had the same
+    // mismatch: you framed a crop and got the whole sensor.
+    function visibleCrop(video) {
+      const boxW = video.clientWidth || window.innerWidth;
+      const boxH = video.clientHeight || window.innerHeight;
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const scale = Math.max(boxW / vw, boxH / vh);          // matches object-fit: cover
+      const sw = Math.min(vw, Math.round(boxW / scale));
+      const sh = Math.min(vh, Math.round(boxH / scale));
+      return { sx: Math.round((vw - sw) / 2), sy: Math.round((vh - sh) / 2), sw, sh };
+    }
+
     function grabScanBlob() {
       const v = $('video'); if (!v.videoWidth) return null;
-      const [w, h] = scaledSize(v.videoWidth, v.videoHeight, 1024);
+      const c = visibleCrop(v);
+      const [w, h] = scaledSize(c.sw, c.sh, 1024);
       const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-      cv.getContext('2d').drawImage(v, 0, 0, w, h);
+      cv.getContext('2d').drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
       return new Promise(r => cv.toBlob(b => r(b), 'image/jpeg', 0.7));
     }
+    // Deliberately NOT using ImageCapture.takePhoto(). It promises a full-sensor still, but on
+    // real devices it fires the hardware capture — a visible dark flash — and hands back a black
+    // frame often enough to be useless. A canvas grab of the live track is boring and always
+    // works, and the track is already 1080p, which is plenty for a check-in photo.
     async function grabKeeperDataURL() {
       const v = $('video'); if (!v.videoWidth) return null;
-      // full-sensor still via ImageCapture where supported (Android Chrome); else the full video frame
-      try {
-        const track = stream && stream.getVideoTracks && stream.getVideoTracks()[0];
-        if (track && window.ImageCapture) {
-          const blob = await new ImageCapture(track).takePhoto();
-          return await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
-        }
-      } catch (e) { /* fall through to canvas capture */ }
-      const [w, h] = scaledSize(v.videoWidth, v.videoHeight, 2560);
+      const c = visibleCrop(v);                        // same crop the user framed
+      const [w, h] = scaledSize(c.sw, c.sh, 2560);
       const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-      cv.getContext('2d').drawImage(v, 0, 0, w, h);
+      cv.getContext('2d').drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
       return cv.toDataURL('image/jpeg', 0.95);
     }
     function loadCaptured(dataURL) { capturedImg = new Image(); capturedImg.src = dataURL; $('resultPhoto').src = dataURL; }
@@ -618,7 +638,9 @@
         // composition.horizon describes the SCANNED frame, not the phone right now — so it only
         // opens the prompt. The live gravity reading decides when it is satisfied.
         const horizon = (analysisResult.composition || {}).horizon;
-        needsStraightening = !!horizon && horizon !== 'Level';
+        // Without a roll reading we cannot tell when it has been fixed, so never open a cue we
+        // could not close.
+        needsStraightening = motionGranted && !!horizon && horizon !== 'Level';
 
         coachingActive = true;
         $('coachCue').classList.add('show');
@@ -768,8 +790,9 @@
     $('gateScanAgain').addEventListener('click', closeGate);
 
     /* ── Level slider: horizon roll from the gravity vector (pitch-independent) ── */
-    (function setupLevel() {
-      const onMotion = (e) => {
+    let motionGranted = false;
+
+    const onMotion = (e) => {
         const a = e.accelerationIncludingGravity; if (!a) return;
         const x = a.x || 0, y = a.y || 0, z = a.z || 0;
         const g = Math.hypot(x, y, z) || 1;
@@ -786,19 +809,24 @@
         d.style.left = p + '%';
         d.classList.toggle('on', upright);
         v.classList.toggle('on', upright);
-        v.textContent = Math.round(tilt) + '°';
-      };
-      const begin = () => window.addEventListener('devicemotion', onMotion);
+      v.textContent = Math.round(tilt) + '°';
+    };
+
+    // Asked from the start tap, and BEFORE getUserMedia — that ordering is the whole fix. iOS
+    // grants one permission prompt per user gesture, so when the camera prompt went first the
+    // motion prompt was silently dropped and never appeared at all. Without it there is no roll
+    // reading, which is why the straighten cue never fired.
+    async function requestMotion() {
       const DME = window.DeviceMotionEvent;
-      if (DME && typeof DME.requestPermission === 'function') {
-        // iOS 13+: motion permission must be requested from a user gesture
-        $('startBtn').addEventListener('click', () => {
-          DME.requestPermission().then(r => { if (r === 'granted') begin(); }).catch(() => {});
-        });
-      } else if (DME) {
-        begin();
-      }
-    })();
+      if (!DME) return;
+      try {
+        if (typeof DME.requestPermission === 'function') {
+          if (await DME.requestPermission() !== 'granted') return;   // denied: cues stay silent
+        }
+        window.addEventListener('devicemotion', onMotion);
+        motionGranted = true;
+      } catch (e) { /* unsupported or dismissed — degrade to no level cues */ }
+    }
   </script>
 </body>
 </html>
