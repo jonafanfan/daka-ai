@@ -1,8 +1,13 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.12` (shipped)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.13` (shipped)
 
 > **Recent changes**
+>
+> - **`0.13` — `placement_hint` (additive).** One short model-written instruction saying where to
+>   stand, anchored to something visible and expressing **depth** — the thing a flat marker cannot
+>   show. The model is told which side the geometry chose, so its wording cannot contradict the
+>   marker. Free text, so it is validated server-side: anything unusable becomes `""`. See §3.8.
 >
 > - **`0.12` — the engine now explains itself (additive).** `placement` gains `reason` (closed
 >   enum) and `reason_text` (short display string) naming the signal that actually decided the
@@ -93,6 +98,8 @@ Every field below is always present on a `200`. There are no optional keys.
 
   "camera_tilt":    { "direction": "down",
                       "reason": "Empty space above — aim a little lower" },
+
+  "placement_hint": "Stand in front of the blue door",
 
   "hashtags":       ["#cafevibes", "#coffeetime", "#goldenhour"],
 
@@ -191,6 +198,23 @@ array in memory and no extra tokens.
 Deliberately conservative: a band must carry under **45%** of the rest of the frame's interest
 *and* be emptier than the opposite band, and the whole check is skipped on a flat, low-contrast
 map. Otherwise the cue fires on ordinary scenes and gets ignored.
+
+### 3.8 `placement_hint` — where to stand, in words *(shown above the shutter)*
+
+| Field | Type | Notes |
+|---|---|---|
+| `placement_hint` | string | ≤ 60 chars, no trailing full stop; **`""` when unusable** |
+
+`placement` and the marker give the position **across** the frame. Neither can express how far
+**into** the scene to stand, and the geometry has no idea there is a doorway or a bench to stand in
+front of — only the model sees that. So this is asked for in the same vision call, phrased around
+depth (*"in front of"*, *"just behind"*, *"level with"*), and the model is told which side the
+engine picked so its sentence cannot contradict the marker.
+
+It is the only free-text field here that is not drawn from a closed set, so it is **validated, not
+trusted**: wrong type, empty, whitespace-only or over 60 characters all collapse to `""`, and the
+client then renders nothing. A sentence that overflows the panel is worse than no sentence. It is
+also `""` whenever the model call degrades — see §3.6.
 
 ### 3.4 `composition` — descriptive assessment
 

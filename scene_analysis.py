@@ -154,6 +154,20 @@ def _compute_placement(gray, saliency_map) -> dict:
         return FALLBACK
 
 
+def _clean_hint(value) -> str:
+    """The model's placement sentence, or "" when it gave us nothing usable.
+
+    Shown verbatim above the shutter, so it is validated rather than trusted: wrong type, empty,
+    or rambling all collapse to "" and the client renders no hint at all. A sentence that overflows
+    the panel is worse than no sentence, and this is free-text from a model — the one field here
+    that is not drawn from a closed set.
+    """
+    if not isinstance(value, str):
+        return ""
+    hint = " ".join(value.split()).rstrip(".")
+    return hint if 0 < len(hint) <= 60 else ""
+
+
 def _detect_dead_space(saliency_map) -> dict:
     """Is a third of the frame carrying nothing? Then aim the camera off it.
 
@@ -204,7 +218,7 @@ def _moderate_image(b64: str) -> bool:
         return True
 
 
-def _analyze_with_gpt(b64: str) -> dict:
+def _analyze_with_gpt(b64: str, placement: dict | None = None) -> dict:
     """Scene name, filter and hashtags from the vision model. Never raises — returns {} instead.
 
     Every failure mode degrades to {}, which analyze_scene turns into safe defaults
@@ -212,6 +226,9 @@ def _analyze_with_gpt(b64: str) -> dict:
     the scan — placement, framing, lighting, blur — does not depend on the model at all, so an
     OpenAI incident should cost the scene label, not the whole feature.
     """
+    # Tell the model which side the geometry already picked, so its sentence agrees with the
+    # marker instead of contradicting it. extract_features runs before this call, so it is known.
+    side = "left" if (placement or {}).get("x", 0.667) < 0.5 else "right"
     try:
         response = _get_openai_client().chat.completions.create(
             model="gpt-5.4-nano",
@@ -228,7 +245,17 @@ def _analyze_with_gpt(b64: str) -> dict:
                         "Use the Warm variants for cosy/golden-hour scenes, Cool for clean/urban/overcast scenes, "
                         "Dramatic for moody or high-contrast scenes, and the black & white options (Silvertone soft, Noir high-contrast) "
                         "only when colour adds little.\n"
-                        "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase"
+                        "- \"hashtags\": array of exactly 3 relevant hashtags with # symbol, all lowercase\n"
+                        "- \"placement_hint\": ONE short instruction, at most 8 words, telling the person "
+                        "where to stand. Anchor it to something actually visible in the photo, and make "
+                        "the DEPTH clear — how far INTO the scene to stand. The app already shows the "
+                        "left/right position on screen but cannot show depth, so depth is the whole point "
+                        "of this field. Use phrasing like \"in front of\", \"just behind\", \"beside\", "
+                        "\"level with\". Examples: \"Stand in front of the blue door\", "
+                        "\"Stand just behind the low wall\", \"Stand beside the window, nearer than the plant\". "
+                        "No trailing full stop.\n"
+                        f"The spot is on the {side} side of the frame — keep the instruction consistent "
+                        "with that side."
                     )},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 ]
@@ -414,7 +441,7 @@ def analyze_scene(image_path: str) -> dict:
     if not _moderate_image(b64):
         raise InappropriateImageError("Image flagged as inappropriate")
     features = extract_features(image_path)
-    gpt = _analyze_with_gpt(b64)
+    gpt = _analyze_with_gpt(b64, features["placement"])
 
     filter_name = gpt.get("filter", "Vivid")
     if filter_name not in VALID_FILTERS:
@@ -430,6 +457,7 @@ def analyze_scene(image_path: str) -> dict:
         "composition":  assess_composition(features),
         "placement":    features["placement"],
         "camera_tilt":  features["camera_tilt"],
+        "placement_hint": _clean_hint(gpt.get("placement_hint")),
         "hashtags":     gpt.get("hashtags", []),
         "filter":       filter_name,
     }

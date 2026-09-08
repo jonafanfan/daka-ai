@@ -173,12 +173,12 @@ def test_completion_request_shape(monkeypatch):
     assert content[1]["image_url"]["url"] == "data:image/jpeg;base64,QUJD"
 
 
-def test_prompt_asks_for_exactly_the_three_live_fields(monkeypatch):
+def test_prompt_asks_for_exactly_the_live_fields(monkeypatch):
     """Regression on the pose_tips removal — it must not creep back into the prompt."""
     client = install(FakeClient(completion=completion("{}")), monkeypatch)
     _analyze_with_gpt("Zm9v")
     prompt = prompt_text(client)
-    for field in ("scene_type", "filter", "hashtags"):
+    for field in ("scene_type", "filter", "hashtags", "placement_hint"):
         assert field in prompt
     assert "pose_tips" not in prompt, "pose_tips was removed in contract 0.10"
 
@@ -382,7 +382,7 @@ def test_response_keys_match_the_contract(monkeypatch, scene_image):
     install(FakeClient(completion=completion("{}")), monkeypatch)
     assert set(analyze_scene(scene_image)) == {
         "scene_type", "blueprint", "lighting", "blurry", "blur_var", "edge_sharpness",
-        "composition", "placement", "camera_tilt", "hashtags", "filter",
+        "composition", "placement", "camera_tilt", "placement_hint", "hashtags", "filter",
     }
 
 
