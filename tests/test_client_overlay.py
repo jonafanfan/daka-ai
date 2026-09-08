@@ -35,7 +35,8 @@ def run_js(script):
     """Run a snippet in node. Returns whatever it prints as JSON on the last line."""
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script],
-        capture_output=True, text=True, timeout=30,
+        # encoding matters: text=True alone uses the platform locale, mangling non-ASCII.
+        capture_output=True, text=True, encoding="utf-8", timeout=30,
     )
     assert result.returncode == 0, (
         f"node exited {result.returncode}\n--- stderr ---\n{result.stderr.strip()}"

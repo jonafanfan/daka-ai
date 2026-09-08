@@ -96,7 +96,9 @@ def run(extra):
         path = Path(tmp) / "harness.mjs"
         path.write_text(script, encoding="utf-8")
         result = subprocess.run(
-            ["node", str(path)], capture_output=True, text=True, timeout=30,
+            # encoding is not optional: text=True alone decodes with the platform locale, which on
+            # Windows is cp1252 and mangles every non-ASCII character the cues contain.
+            ["node", str(path)], capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
     assert result.returncode == 0, (
         f"the page threw while running a frame\n--- stderr ---\n{result.stderr.strip()[:2000]}"
@@ -177,3 +179,68 @@ def test_it_survives_the_tracker_never_loading():
     """)
     assert "marker" in out["drawn"], "the marker must still draw without subject detection"
     assert out["cues"], "a fallback cue must still be set"
+
+
+# ── the coaching flow: one cue at a time, in the right order ─────────────────
+#
+# The requested order is subject -> position -> camera. These pin it down, because the order is a
+# product decision rather than an implementation detail: a crooked frame nobody is standing in is
+# not worth complaining about yet.
+
+def cue_for(setup):
+    out = run(SCAN + """
+      tracker.landmarker = {};              // pretend the model loaded
+      """ + setup + """
+      liveLoop(1234);
+      console.log(JSON.stringify({ cues }));
+    """)
+    return out["cues"][-1]
+
+
+def test_no_subject_asks_them_into_frame():
+    assert cue_for("subject.seen = false;") == "Step into frame"
+
+
+def test_subject_off_to_one_side_is_told_which_way():
+    assert cue_for("subject.seen = true; subject.x = 0.30; subject.y = 0.667;") == "Move right"
+    assert cue_for("subject.seen = true; subject.x = 0.95; subject.y = 0.667;") == "Move left"
+
+
+def test_subject_too_far_or_too_near_is_told_so():
+    """Feet higher in frame than the marker means further away."""
+    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.40;") == "Come closer"
+    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.95;") == "Step back"
+
+
+def test_position_is_settled_before_the_camera_is_mentioned():
+    """Someone still walking into place must not also be told to straighten the camera."""
+    cue = cue_for("""
+      subject.seen = true; subject.x = 0.30; subject.y = 0.667;
+      needsStraightening = true; liveLean = 20; tiltHint = 'Empty space above';
+    """)
+    assert cue == "Move right", f"camera cue jumped the queue: {cue!r}"
+
+
+def test_camera_cues_come_once_they_are_on_the_marker():
+    on_marker = "subject.seen = true; subject.x = 0.667; subject.y = 0.667;"
+    assert cue_for(on_marker + "needsStraightening = true; liveLean = 20;") == "Straighten the camera"
+    assert cue_for(on_marker + "tiltHint = 'Empty space above';") == "Empty space above"
+
+
+def test_everything_satisfied_says_take_the_photo():
+    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.667;") \
+        == "Perfect — take the photo"
+
+
+def test_the_marker_is_green_only_when_someone_is_on_it():
+    """Orange means 'not yet' at a glance — the whole point of the colour."""
+    out = run(SCAN + """
+      tracker.landmarker = {};
+      subject.seen = true; subject.x = 0.667; subject.y = 0.667;
+      liveLoop(1234);
+      const wasOn = onMarker;
+      subject.x = 0.20;
+      liveLoop(1235);
+      console.log(JSON.stringify({ wasOn, nowOn: onMarker }));
+    """)
+    assert out["wasOn"] is True and out["nowOn"] is False
