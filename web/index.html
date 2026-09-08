@@ -590,7 +590,7 @@
       return { brightness, detail };
     }
 
-    function startLive() { if (liveActive) return; liveActive = true; liveLoop(); }
+    function startLive() { if (liveActive) return; liveActive = true; liveLoop(performance.now()); }
     function resetCoaching() {
       coachingActive = false; standPos = null; standReason = '';
       subject.seen = false; subject.lostAt = 0; onMarker = false;
@@ -604,7 +604,9 @@
       $('statusChip').classList.remove('show');
       resetCoaching();
     }
-    function liveLoop() {
+    // ts: requestAnimationFrame passes a timestamp. It must be named here — detectSubject
+    // throttles and smooths against it, and reading an undeclared `ts` threw every frame.
+    function liveLoop(ts) {
       if (!liveActive) return;
       liveRAF = requestAnimationFrame(liveLoop);
       const video = $('video'); if (!video.videoWidth) return;
