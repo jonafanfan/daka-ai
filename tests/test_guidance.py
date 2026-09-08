@@ -137,6 +137,31 @@ def test_a_flat_map_is_not_judged():
     assert _detect_dead_space(np.full((120, 160), 0.5, dtype=np.float32))["direction"] == "ok"
 
 
+def test_a_near_flat_map_is_not_judged_either():
+    """The case a perfectly uniform map does not actually test.
+
+    On a uniform map the ratio comparison already returns "ok" on its own, so it proves nothing
+    about the reliability gate. Here the bands differ by a wide *ratio* (0.001 vs 0.01) but a
+    trivial absolute amount, so the ratio test alone would confidently call the top dead. Only the
+    gate stops it, and without one the app would nag about dead space on featureless scenes.
+    """
+    faint = band(top=0.001, mid=0.01, bottom=0.01)
+    assert faint.std() < 0.010, "must be under the gate for this test to mean anything"
+    assert _detect_dead_space(faint)["direction"] == "ok"
+
+
+def test_the_deader_of_two_quiet_bands_wins():
+    """When both outer thirds are quiet, the emptier one decides which way to aim.
+
+    Top (0.02) is quiet enough to trip the threshold on its own, but the bottom (0.01) is emptier
+    still — so the advice must be to aim up and cut the floor, not down. Without the comparison
+    against the opposite band, whichever branch is written first would always win.
+    """
+    result = _detect_dead_space(band(top=0.02, mid=0.9, bottom=0.01))
+    assert result["direction"] == "up"
+    assert "higher" in result["reason"]
+
+
 def test_ok_carries_no_reason_text():
     """The client shows reason verbatim, so 'ok' must not produce a cue."""
     assert _detect_dead_space(band(top=0.7, mid=0.8, bottom=0.75))["reason"] == ""
