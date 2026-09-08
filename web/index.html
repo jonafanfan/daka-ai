@@ -195,8 +195,11 @@
     /* ─── Results ─── */
     #results { background: var(--bg); overflow-y: auto; -webkit-overflow-scrolling: touch; }
     .results-inner { min-height: 100%; display: flex; flex-direction: column; }
-    .photo-wrap { position: relative; width: 100%; aspect-ratio: 3 / 4; background: #000; flex-shrink: 0; }
-    #resultPhoto { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* Aspect is set from the captured image at runtime. It used to be pinned to 3:4 while the
+       keeper is the phone's own shape, so `cover` cropped the top and bottom off the very
+       framing the user had just been coached into. */
+    .photo-wrap { position: relative; width: 100%; aspect-ratio: 3 / 4; background: #000; flex-shrink: 0; max-height: 62vh; }
+    #resultPhoto { width: 100%; height: 100%; object-fit: contain; display: block; }
     .scene-badge { position: absolute; bottom: 14px; left: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 14px; font-weight: 600; }
     .filter-btn { position: absolute; bottom: 14px; right: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 12px; font-weight: 500; border: none; font-family: inherit; }
     .filter-btn.active { background: rgba(197,122,82,0.92); }
@@ -590,9 +593,13 @@
       return { brightness, detail };
     }
 
-    function startLive() { if (liveActive) return; liveActive = true; liveLoop(); }
+    function startLive() { if (liveActive) return; liveActive = true; liveLoop(performance.now()); }
     function resetCoaching() {
       coachingActive = false; standPos = null; standReason = '';
+      // Stale advice is worse than none: without this, a failed rescan leaves the PREVIOUS
+      // scene's instruction sitting above the shutter, describing a scene you have walked away
+      // from.
+      const hint = $('placeHint'); if (hint) hint.textContent = '';
       subject.seen = false; subject.lostAt = 0; onMarker = false;
       tiltHint = null; needsStraightening = false;
       $('camLevel').classList.remove('needs-fix');
@@ -604,7 +611,9 @@
       $('statusChip').classList.remove('show');
       resetCoaching();
     }
-    function liveLoop() {
+    // ts: requestAnimationFrame passes a timestamp. It must be named here — detectSubject
+    // throttles and smooths against it, and reading an undeclared `ts` threw every frame.
+    function liveLoop(ts) {
       if (!liveActive) return;
       liveRAF = requestAnimationFrame(liveLoop);
       const video = $('video'); if (!video.videoWidth) return;
@@ -719,7 +728,18 @@
       cv.getContext('2d').drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
       return cv.toDataURL('image/jpeg', 0.95);
     }
-    function loadCaptured(dataURL) { capturedImg = new Image(); capturedImg.src = dataURL; $('resultPhoto').src = dataURL; }
+    function loadCaptured(dataURL) {
+      capturedImg = new Image();
+      // Match the preview box to the photo, so what you framed is what you review.
+      capturedImg.onload = () => {
+        const wrap = document.querySelector('.photo-wrap');
+        if (wrap && capturedImg.naturalWidth) {
+          wrap.style.aspectRatio = capturedImg.naturalWidth + ' / ' + capturedImg.naturalHeight;
+        }
+      };
+      capturedImg.src = dataURL;
+      $('resultPhoto').src = dataURL;
+    }
 
     /* ── Backend ── */
     async function postAnalyze(blob) {
