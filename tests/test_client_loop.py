@@ -367,3 +367,36 @@ def test_a_pose_too_short_to_be_a_standing_person_is_rejected():
 def test_a_realistic_standing_height_is_accepted():
     out = detect_frames(3, opts="{ noseY: 0.30, ankleY: 0.88 }")
     assert out["seen"] is True
+
+
+def test_a_pose_with_hidden_legs_is_rejected():
+    """Legs and torso are checked separately, and this is what the leg check is for.
+
+    A pose with a clear torso but invisible legs is the model guessing where someone's feet are
+    behind furniture. Since the marker is a footprint, an invented foot position is exactly the
+    wrong thing to trust. Written with a visible torso on purpose: a test that dims *everything*
+    passes on the torso check alone and says nothing about the leg check.
+    """
+    out = run(SCAN + FAKE_POSE + """
+      tracker.landmarker = { detectForVideo: () => {
+        const lm = pose({ vis: 0.9 });
+        lm[27].visibility = 0.2; lm[28].visibility = 0.2;   // ankles hidden
+        lm[25].visibility = 0.2; lm[26].visibility = 0.2;   // knees hidden
+        return { landmarks: [lm] };
+      } };
+      let t = 1000;
+      for (let i = 0; i < 6; i++) { t += 150; detectSubject($('video'), t); }
+      console.log(JSON.stringify({ seen: subject.seen, streak }));
+    """)
+    assert out["seen"] is False, "trusted a foot position the model could not actually see"
+
+
+def test_the_model_is_configured_with_raised_confidence_floors():
+    """Asserted statically, not behaviourally: the fake tracker replaces the model entirely, so
+    nothing here can exercise MediaPipe's own thresholds. The defaults are 0.5, which is tuned for
+    finding a person rather than deciding whether one is present."""
+    page = PAGE.read_text(encoding="utf-8")
+    for option in ("minPoseDetectionConfidence", "minPosePresenceConfidence", "minTrackingConfidence"):
+        match = re.search(option + r":\s*([0-9.]+)", page)
+        assert match, f"{option} is not set — the 0.5 default is too eager for this use"
+        assert float(match.group(1)) >= 0.7, f"{option} dropped to {match.group(1)}"
