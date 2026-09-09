@@ -405,6 +405,13 @@
           },
           runningMode: 'VIDEO',
           numPoses: 1,
+          // Defaults are 0.5, which is tuned for "find the person" rather than "is there one".
+          // We are asking the second question, and a false yes turns the marker green with an
+          // empty frame — actively misleading. Raised, at the cost of taking slightly longer to
+          // notice someone who really is there.
+          minPoseDetectionConfidence: 0.7,
+          minPosePresenceConfidence: 0.7,
+          minTrackingConfidence: 0.7,
         });
         // GPU first, CPU as the fallback — some phones refuse the GPU delegate outright.
         try { tracker.landmarker = await vision.PoseLandmarker.createFromOptions(fileset, opts('GPU')); }
@@ -420,6 +427,10 @@
     // make cues flicker, so each reading is eased toward rather than snapped to.
     const subject = { x: 0.5, y: 0.66, seen: false, lostAt: 0 };
     let lastDetect = 0;
+    // ~10fps detection, so three frames is about a third of a second — long enough to reject a
+    // one-frame flicker, short enough that nobody notices the wait.
+    const CONFIRM_FRAMES = 3;
+    let streak = 0;
 
     function detectSubject(video, ts) {
       if (!tracker.landmarker || !video.videoWidth) return;
@@ -431,6 +442,7 @@
       try { res = tracker.landmarker.detectForVideo(video, ts); } catch (e) { return; }
       const poses = (res && res.landmarks) || [];
       if (!poses.length) {
+        streak = 0;
         if (!subject.lostAt) subject.lostAt = ts;
         if (ts - subject.lostAt > 600) subject.seen = false;   // brief dropouts are not "gone"
         return;
@@ -443,6 +455,24 @@
       const feet = mid(lm[27], lm[28]) || mid(lm[23], lm[24]) || lm[0];
       if (!feet) return;
 
+      // A pose model is trained to FIND a person, so shown an empty room it will still offer its
+      // best guess. Three independent checks before believing it, because a marker that turns
+      // green with nobody in shot is worse than one that takes an extra moment to notice someone.
+      const vis = (i) => (lm[i] && typeof lm[i].visibility === 'number') ? lm[i].visibility : 1;
+      const legsSeen = Math.max(vis(27), vis(28), vis(25), vis(26)) > 0.6;
+      const torsoSeen = Math.max(vis(11), vis(12)) > 0.6;
+      const head = lm[0] || lm[11];
+      // A standing person fills a real slice of the frame. Anything shorter is usually the model
+      // stretching a pose over background clutter.
+      const tall = head ? (feet.y - head.y) > 0.20 : false;
+
+      if (!(legsSeen && torsoSeen && tall)) {
+        streak = 0;
+        if (!subject.lostAt) subject.lostAt = ts;
+        if (ts - subject.lostAt > 600) subject.seen = false;
+        return;
+      }
+
       // Landmarks are normalised to the FULL video frame, but the marker lives in the visible
       // crop. Converting is not optional: skipping it is the same mistake that put the marker off
       // screen, just in the other direction.
@@ -450,6 +480,11 @@
       const cx = (feet.x * video.videoWidth - c.sx) / c.sw;
       const cy = (feet.y * video.videoHeight - c.sy) / c.sh;
       if (!isFinite(cx) || !isFinite(cy)) return;
+
+      // Temporal confirmation. A single frame is not evidence — a person-shaped coat stand or a
+      // poster will produce one, and the old code believed it instantly. Real people persist.
+      streak += 1;
+      if (streak < CONFIRM_FRAMES) return;
 
       if (!subject.seen) { subject.x = cx; subject.y = cy; }
       subject.x += (cx - subject.x) * 0.35;
@@ -564,12 +599,25 @@
         ctx.save();
         ctx.font = '600 ' + Math.max(12, Math.round(H * 0.021)) + 'px Georgia, "Noto Serif SC", serif';
         ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
         ctx.shadowColor = 'rgba(0,0,0,0.8)';
         ctx.shadowBlur = 6;
         ctx.fillStyle = 'rgba(255,255,255,0.95)';
         const halfText = ctx.measureText(label).width / 2 + 10;
-        ctx.fillText(label, Math.min(W - halfText, Math.max(halfText, fx)), fy + rh + 10);
+        const lx = Math.min(W - halfText, Math.max(halfText, fx));
+
+        // The cue pill is anchored 160px off the bottom and is roughly 37px tall, so anything
+        // below this line gets covered by it. When the marker sits low in the frame — which it
+        // does whenever placement.y is near its 0.72 ceiling — the caption lands right underneath
+        // and is unreadable. Flip it above the footprint instead of letting it hide.
+        const font = Math.max(12, Math.round(H * 0.021));
+        const cueTop = H - 205;
+        if (fy + rh + 10 + font <= cueTop) {
+          ctx.textBaseline = 'top';
+          ctx.fillText(label, lx, fy + rh + 10);
+        } else {
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(label, lx, fy - rh - 10);
+        }
         ctx.restore();
       }
     }
@@ -600,7 +648,7 @@
       // scene's instruction sitting above the shutter, describing a scene you have walked away
       // from.
       const hint = $('placeHint'); if (hint) hint.textContent = '';
-      subject.seen = false; subject.lostAt = 0; onMarker = false;
+      subject.seen = false; subject.lostAt = 0; onMarker = false; streak = 0;
       tiltHint = null; needsStraightening = false;
       $('camLevel').classList.remove('needs-fix');
       setCue(null);
@@ -665,12 +713,15 @@
           // No detection available — fall back to the static prompt rather than guessing.
           setCue(tracker.failed ? 'Have them stand on the marker' : 'Getting ready…');
         } else if (!subject.seen) {
-          setCue('Step into frame');
+          setCue('Get them in frame');
         } else if (Math.abs(dx) >= limit) {
-          setCue(dx > 0 ? 'Move left' : 'Move right');
+          // "them", not "you": the reader is holding the phone, and everything they are told to do
+          // themselves (straighten, aim) is phrased that way too. Left/right are the READER's, i.e.
+          // what is on screen — a subject told to "move left" would go the opposite way.
+          setCue(dx > 0 ? 'Move them left' : 'Move them right');
         } else if (Math.abs(dy) >= limit + 0.03) {
           // Feet higher in frame than the marker means further away, and vice versa.
-          setCue(dy < 0 ? 'Come closer' : 'Step back');
+          setCue(dy < 0 ? 'Bring them closer' : 'Send them back');
         } else if (needsStraightening) {
           setCue('Straighten the camera');
         } else if (tiltHint) {
