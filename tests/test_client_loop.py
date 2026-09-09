@@ -190,6 +190,7 @@ def test_it_survives_the_tracker_never_loading():
 def cue_for(setup):
     out = run(SCAN + """
       tracker.landmarker = {};              // pretend the model loaded
+      streak = CONFIRM_FRAMES;              // and that detection has been confirmed
       """ + setup + """
       liveLoop(1234);
       console.log(JSON.stringify({ cues }));
@@ -198,18 +199,18 @@ def cue_for(setup):
 
 
 def test_no_subject_asks_them_into_frame():
-    assert cue_for("subject.seen = false;") == "Step into frame"
+    assert cue_for("subject.seen = false;") == "Get them in frame"
 
 
 def test_subject_off_to_one_side_is_told_which_way():
-    assert cue_for("subject.seen = true; subject.x = 0.30; subject.y = 0.667;") == "Move right"
-    assert cue_for("subject.seen = true; subject.x = 0.95; subject.y = 0.667;") == "Move left"
+    assert cue_for("subject.seen = true; subject.x = 0.30; subject.y = 0.667;") == "Move them right"
+    assert cue_for("subject.seen = true; subject.x = 0.95; subject.y = 0.667;") == "Move them left"
 
 
 def test_subject_too_far_or_too_near_is_told_so():
     """Feet higher in frame than the marker means further away."""
-    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.40;") == "Come closer"
-    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.95;") == "Step back"
+    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.40;") == "Bring them closer"
+    assert cue_for("subject.seen = true; subject.x = 0.667; subject.y = 0.95;") == "Send them back"
 
 
 def test_position_is_settled_before_the_camera_is_mentioned():
@@ -218,7 +219,7 @@ def test_position_is_settled_before_the_camera_is_mentioned():
       subject.seen = true; subject.x = 0.30; subject.y = 0.667;
       needsStraightening = true; liveLean = 20; tiltHint = 'Empty space above';
     """)
-    assert cue == "Move right", f"camera cue jumped the queue: {cue!r}"
+    assert cue == "Move them right", f"camera cue jumped the queue: {cue!r}"
 
 
 def test_camera_cues_come_once_they_are_on_the_marker():
@@ -244,3 +245,62 @@ def test_the_marker_is_green_only_when_someone_is_on_it():
       console.log(JSON.stringify({ wasOn, nowOn: onMarker }));
     """)
     assert out["wasOn"] is True and out["nowOn"] is False
+
+
+# ── false-positive resistance ────────────────────────────────────────────────
+
+def test_a_single_detection_frame_is_not_believed():
+    """A person-shaped object produces one good frame. A person produces many.
+
+    Without this the marker turned green the instant the model guessed, which it will do on an
+    empty room because it is trained to find someone rather than to decide whether anyone is there.
+    """
+    out = run(SCAN + """
+      tracker.landmarker = {};
+      streak = 1;                      // one confirming frame so far
+      subject.seen = false;
+      liveLoop(1234);
+      console.log(JSON.stringify({ cues, onMarker }));
+    """)
+    assert out["cues"][-1] == "Get them in frame"
+    assert out["onMarker"] is False, "must not go green on a single frame"
+
+
+def test_confirmation_is_required_before_the_marker_can_go_green():
+    out = run(SCAN + """
+      tracker.landmarker = {};
+      subject.seen = true; subject.x = 0.667; subject.y = 0.667;
+      streak = CONFIRM_FRAMES;
+      liveLoop(1234);
+      console.log(JSON.stringify({ onMarker }));
+    """)
+    assert out["onMarker"] is True
+
+
+def all_cue_strings():
+    """Every literal passed to setCue, including the ones inside ternaries.
+
+    Matching only `setCue('...')` misses `setCue(a ? 'x' : 'y')` — which is where the movement
+    cues live, i.e. exactly the ones this file cares about. That version of the check passed while
+    testing nothing.
+    """
+    page = PAGE.read_text(encoding="utf-8")
+    cues = set()
+    for call in re.findall(r"setCue\(([^;]*?)\);", page):
+        cues |= set(re.findall(r"'([^']+)'", call))
+    return cues
+
+
+def test_the_cue_scan_finds_the_movement_cues():
+    """Guard on the guard: if this ever returns nothing, the test below is vacuous."""
+    cues = all_cue_strings()
+    assert len(cues) >= 6, f"expected the full cue set, found {sorted(cues)}"
+    assert any(c.startswith("Move") for c in cues), "movement cues not found — check the regex"
+
+
+def test_every_movement_cue_says_who_moves():
+    """The reader is holding the phone. A cue telling *them* to move left, when it is the subject
+    who should move — and screen-left at that — sends everyone the wrong way."""
+    for cue in all_cue_strings():
+        if cue.split()[0] in ("Move", "Bring", "Send", "Step", "Come"):
+            assert " them" in cue, f"ambiguous about who moves: {cue!r}"

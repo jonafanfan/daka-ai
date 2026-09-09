@@ -125,3 +125,37 @@ def test_visible_crop_matches_the_screen_aspect():
         assert row["sw"] / row["sh"] == pytest.approx(390 / 844, rel=0.01), (
             f"crop aspect must match the screen for a {row['vw']}x{row['vh']} track"
         )
+
+
+# ── caption placement vs the cue pill ────────────────────────────────────────
+
+def test_caption_flips_above_the_marker_when_the_cue_pill_would_cover_it():
+    """placement.y tops out at 0.72, and at that height the caption lands under the cue pill.
+
+    The pill is anchored 160px off the bottom, so a caption below roughly H-205 is unreadable.
+    Rather than let it hide, it flips above the footprint.
+    """
+    out = run_js(function_source("drawStandMarker") + STUB_CTX + """
+      const H = 844, rows = [];
+      for (const y of [0.60, 0.667, 0.72]) {
+        called.length = 0;
+        drawStandMarker(390, H, ctx, 0.667, y, false, 'Light falls on your face');
+        rows.push({ y, capY: called[0].y, footY: y * H });
+      }
+      console.log(JSON.stringify(rows));
+    """)
+    for row in out:
+        clear_of_pill = row["capY"] <= 844 - 205
+        above_marker = row["capY"] < row["footY"]
+        assert clear_of_pill or above_marker, (
+            f"at y={row['y']} the caption sits at {row['capY']}, under the cue pill"
+        )
+
+
+def test_a_high_marker_still_captions_below():
+    """Flipping is a last resort — below the footprint reads better, so keep it where it fits."""
+    out = run_js(function_source("drawStandMarker") + STUB_CTX + """
+      drawStandMarker(390, 844, ctx, 0.667, 0.60, false, 'Cleaner background here');
+      console.log(JSON.stringify({ capY: called[0].y, footY: 0.60 * 844 }));
+    """)
+    assert out["capY"] > out["footY"], "should still sit below when there is room"
