@@ -38,7 +38,7 @@ Home  →  camera  →  point at an empty scene, tap shutter
                          ↓
               subject stands on it  →  take the keeper photo
                          ↓
-         results: filter preview, hashtag pills, share/save with watermark
+         results: filter preview, hashtag pills, share/save
 ```
 
 ---
@@ -143,16 +143,23 @@ dashboard.
 .venv/Scripts/python -m pytest        # or bare `pytest`
 ```
 
-**168 tests, ~2 seconds.** No API key needed and no network calls — the OpenAI client is faked, and
+**240 tests, ~3 seconds.** No API key needed and no network calls — the OpenAI client is faked, and
 the fixture makes constructing a real one a test failure.
+
+The two `test_client_*` files run the page's own JavaScript in node against a stubbed DOM. They
+exist because two bugs reached a phone that `node --check` could not see — both were valid syntax,
+both were out-of-scope identifiers that only failed when the code actually ran.
 
 | File | Tests | Covers |
 |---|---|---|
 | [`test_openai_paths.py`](tests/test_openai_paths.py) | 65 | moderation, every degradation path, request shapes, `_encode_image` |
 | [`test_assessments.py`](tests/test_assessments.py) | 40 | lighting, composition, blueprint — thresholds at their boundaries |
+| [`test_guidance.py`](tests/test_guidance.py) | 40 | placement reason, dead-space tilt, the model's depth hint |
 | [`test_api.py`](tests/test_api.py) | 27 | endpoint guards: size cap, rate limit, error mapping, CORS |
+| [`test_client_loop.py`](tests/test_client_loop.py) | 25 | **the render loop and coaching flow, run for real in node** |
 | [`test_placement.py`](tests/test_placement.py) | 22 | every directional claim in `_compute_placement` |
 | [`test_features.py`](tests/test_features.py) | 14 | `extract_features` on synthetic scenes, all three blur regimes |
+| [`test_client_overlay.py`](tests/test_client_overlay.py) | 7 | marker drawing and the visible-crop maths |
 
 CI runs the suite on every PR to `main` ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
 Test-only dependencies live in `requirements-dev.txt` so Render's build stays lean.
