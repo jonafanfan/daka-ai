@@ -198,7 +198,12 @@
     /* Aspect is set from the captured image at runtime. It used to be pinned to 3:4 while the
        keeper is the phone's own shape, so `cover` cropped the top and bottom off the very
        framing the user had just been coached into. */
-    .photo-wrap { position: relative; width: 100%; aspect-ratio: 3 / 4; background: #000; flex-shrink: 0; max-height: 62vh; }
+    /* Two thirds of the viewport, with `contain` so the whole frame is visible inside it.
+       A fixed height rather than an aspect ratio: the keeper is the phone's own shape, which
+       is taller than any box that would also leave room for the buttons, so something has to
+       give. Letterboxing shows the entire photo; cropping to fill would hide part of the
+       framing the user was just coached into. */
+    .photo-wrap { position: relative; width: 100%; height: 67vh; background: #000; flex-shrink: 0; }
     #resultPhoto { width: 100%; height: 100%; object-fit: contain; display: block; }
     .scene-badge { position: absolute; bottom: 14px; left: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 14px; font-weight: 600; }
     .filter-btn { position: absolute; bottom: 14px; right: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 12px; font-weight: 500; border: none; font-family: inherit; }
@@ -781,13 +786,8 @@
     }
     function loadCaptured(dataURL) {
       capturedImg = new Image();
-      // Match the preview box to the photo, so what you framed is what you review.
-      capturedImg.onload = () => {
-        const wrap = document.querySelector('.photo-wrap');
-        if (wrap && capturedImg.naturalWidth) {
-          wrap.style.aspectRatio = capturedImg.naturalWidth + ' / ' + capturedImg.naturalHeight;
-        }
-      };
+      // No aspect juggling needed any more: the box is a fixed two thirds of the screen and
+      // `contain` fits the whole photo inside it, so nothing is ever cropped out of the preview.
       capturedImg.src = dataURL;
       $('resultPhoto').src = dataURL;
     }
@@ -912,20 +912,9 @@
       for (let i=0;i<d.length;i+=4){ const R=d[i],G=d[i+1],B=d[i+2]; d[i]=R*m0+G*m1+B*m2; d[i+1]=R*m3+G*m4+B*m5; d[i+2]=R*m6+G*m7+B*m8; }
     }
 
-    /* ── Watermark baked into saved/shared images ── */
-    function drawWatermark(ctx, w, h) {
-      const fs = Math.max(13, Math.round(w * 0.028));
-      ctx.save();
-      ctx.font = '600 ' + fs + 'px Georgia, "Noto Serif SC", serif';
-      ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
-      ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = fs * 0.35; ctx.shadowOffsetY = 1;
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      const pad = Math.round(w * 0.03);
-      ctx.fillText('Shot with 打卡AI', w - pad, h - pad);
-      ctx.restore();
-    }
-
     /* ── Save / share ── */
+    // Bakes the chosen filter into the pixels, because CSS filters are a preview only — the file
+    // itself has to carry them. Nothing else is added: the photo people save is their photo.
     function bakeBlob() {
       return new Promise(resolve => {
         const cv = document.createElement('canvas');
@@ -937,7 +926,6 @@
           applyFilters(id.data, FILTER_CSS[currentFilter]);
           ctx.putImageData(id, 0, 0);
         }
-        drawWatermark(ctx, cv.width, cv.height);
         cv.toBlob(b => resolve(b), 'image/jpeg', 0.95);
       });
     }

@@ -415,9 +415,11 @@ step_back  step_closer  raise_camera  lower_camera  level_horizon  ← camera po
 
 ### 6.4 `scene_yap` — shareable one-liner
 
-One on-brand sentence (≤ ~90 chars) for the share caption, alongside the hashtag pills and the
-"Shot with 打卡AI" watermark. Open question: English voice with `打卡` allowed inline, ≤ 1 emoji, no
-hashtags inside — and whether the emoji survives into the watermark.
+One on-brand sentence (≤ ~90 chars) for the share caption, alongside the hashtag pills. Open
+question: English voice with `打卡` allowed inline, ≤ 1 emoji, no hashtags inside.
+
+(The watermark this originally sat beside has since been removed — people want their photo, not
+our branding on it.)
 
 ### 6.5 Out of scope
 
