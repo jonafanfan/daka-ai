@@ -304,3 +304,66 @@ def test_every_movement_cue_says_who_moves():
     for cue in all_cue_strings():
         if cue.split()[0] in ("Move", "Bring", "Send", "Step", "Come"):
             assert " them" in cue, f"ambiguous about who moves: {cue!r}"
+
+
+# ── the confirmation logic itself, driven by a fake pose ─────────────────────
+#
+# The flow tests above pre-set `subject.seen` and never enter detectSubject, so they say nothing
+# about whether a detection is *believed*. These feed real landmark data through it.
+
+FAKE_POSE = """
+function pose(opts) {
+  const o = Object.assign({ vis: 0.9, noseY: 0.25, ankleY: 0.85 }, opts || {});
+  const lm = [];
+  for (let i = 0; i < 33; i++) lm.push({ x: 0.5, y: 0.5, z: 0, visibility: o.vis });
+  lm[0]  = { x: 0.5, y: o.noseY,  z: 0, visibility: o.vis };   // nose
+  lm[11] = { x: 0.45, y: 0.40, z: 0, visibility: o.vis };      // shoulders
+  lm[12] = { x: 0.55, y: 0.40, z: 0, visibility: o.vis };
+  lm[27] = { x: 0.48, y: o.ankleY, z: 0, visibility: o.vis };  // ankles
+  lm[28] = { x: 0.52, y: o.ankleY, z: 0, visibility: o.vis };
+  return lm;
+}
+function fakeTracker(opts) {
+  return { detectForVideo: () => ({ landmarks: [pose(opts)] }) };
+}
+"""
+
+
+def detect_frames(n, opts="{}", start=1000):
+    """Run n detections, spaced past the 100ms throttle, and report what was believed."""
+    return run(SCAN + FAKE_POSE + f"""
+      tracker.landmarker = fakeTracker({opts});
+      let t = {start};
+      for (let i = 0; i < {n}; i++) {{ t += 150; detectSubject($('video'), t); }}
+      console.log(JSON.stringify({{ seen: subject.seen, streak }}));
+    """)
+
+
+def test_one_good_frame_is_not_enough():
+    """A person-shaped object gives you one. This is the false-green fix."""
+    out = detect_frames(1)
+    assert out["seen"] is False, "believed a single frame"
+    assert out["streak"] == 1
+
+
+def test_three_good_frames_are_believed():
+    out = detect_frames(3)
+    assert out["seen"] is True, f"still not believed after 3 frames: {out}"
+
+
+def test_a_low_confidence_pose_is_never_believed():
+    """Landmark visibility below the floor means the model is guessing at background clutter."""
+    out = detect_frames(6, opts="{ vis: 0.3 }")
+    assert out["seen"] is False
+    assert out["streak"] == 0, "a rejected frame must reset the streak, not bank it"
+
+
+def test_a_pose_too_short_to_be_a_standing_person_is_rejected():
+    """Head barely above the feet — the model stretched a pose over something that is not a person."""
+    out = detect_frames(6, opts="{ noseY: 0.70, ankleY: 0.85 }")
+    assert out["seen"] is False
+
+
+def test_a_realistic_standing_height_is_accepted():
+    out = detect_frames(3, opts="{ noseY: 0.30, ankleY: 0.88 }")
+    assert out["seen"] is True
