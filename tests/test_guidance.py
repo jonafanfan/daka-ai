@@ -4,6 +4,8 @@ Both exist so the app can explain itself rather than showing an unexplained dot.
 reason is derived from work the engine was already doing and throwing away; the dead-space check
 reuses the saliency map placement has already built.
 """
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -231,3 +233,40 @@ def test_unusable_hints_become_empty(raw):
 def test_the_length_cap_is_a_boundary_not_a_guess():
     assert _clean_hint("x" * 60) == "x" * 60
     assert _clean_hint("x" * 61) == ""
+
+
+# ── client/engine agreement on the filter set ────────────────────────────────
+
+def _page():
+    return (pathlib.Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(
+        encoding="utf-8")
+
+
+def test_the_client_offers_exactly_the_filters_the_engine_can_pick():
+    """Two lists, in two languages, that must stay identical.
+
+    The engine validates `filter` against VALID_FILTERS; the client maps that name to a CSS string.
+    A name the client does not know renders the photo unfiltered with no error at either end — and
+    now that the picker is built from the client's map, it would also be missing from the strip.
+    Silent on both sides, which is exactly why it is worth pinning.
+    """
+    import re
+
+    from scene_analysis import VALID_FILTERS
+
+    block = re.search(r"const FILTER_CSS = \{(.*?)\n    \};", _page(), re.S)
+    assert block, "FILTER_CSS not found in the page"
+    client_filters = re.findall(r"'([^']+)':\s*'", block.group(1))
+    assert client_filters == VALID_FILTERS, (
+        "client offers %s, engine can pick %s" % (client_filters, VALID_FILTERS)
+    )
+
+
+def test_the_picker_includes_an_off_switch():
+    """Turning the filter off must be as reachable as turning it on, now that the strip is the only
+    place that choice lives — the model's pick is applied by default."""
+    page = _page()
+    assert "const NO_FILTER = 'Original';" in page
+    assert "[NO_FILTER, ...Object.keys(FILTER_CSS)]" in page, (
+        "the strip must be built from the filter map, not a hand-written list that can drift"
+    )
