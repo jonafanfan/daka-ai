@@ -206,8 +206,22 @@
     .photo-wrap { position: relative; width: 100%; height: 67vh; background: #000; flex-shrink: 0; }
     #resultPhoto { width: 100%; height: 100%; object-fit: contain; display: block; }
     .scene-badge { position: absolute; bottom: 14px; left: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 14px; font-weight: 600; }
-    .filter-btn { position: absolute; bottom: 14px; right: 14px; background: rgba(0,0,0,0.45); color: #fff; padding: 6px 16px; border-radius: 100px; font-size: 12px; font-weight: 500; border: none; font-family: inherit; }
-    .filter-btn.active { background: rgba(197,122,82,0.92); }
+    /* One horizontal row, deliberately. A grid of eight swatches is a lot of decision for
+       something the app has already made a reasonable choice about — the strip keeps the model's
+       pick one tap away while letting anyone who disagrees browse the rest. */
+    .filter-strip {
+      display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px 4px;
+      scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    }
+    .filter-strip::-webkit-scrollbar { display: none; }
+    .filter-opt {
+      flex: 0 0 auto; padding: 7px 14px; border-radius: 100px; font-size: 13px;
+      border: 1.5px solid var(--accent); color: var(--accent); background: transparent;
+      font-family: inherit; white-space: nowrap;
+    }
+    .filter-opt.on { background: var(--accent); color: #fff; }
+    /* A dot, not a label: it marks the model's choice without turning the row into a lecture. */
+    .filter-opt.pick::after { content: ' ·'; font-weight: 700; }
 
     .cards { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
     .card { background: var(--surface); border-radius: 14px; padding: 18px; box-shadow: var(--card-shadow); }
@@ -318,8 +332,8 @@
       <div class="photo-wrap">
         <img id="resultPhoto" alt="" />
         <div class="scene-badge" id="sceneBadge"></div>
-        <button class="filter-btn" id="filterBtn">Tap to preview filter</button>
       </div>
+      <div class="filter-strip" id="filterStrip"></div>
       <div class="cards" id="cards"></div>
       <div class="bottom">
         <button class="btn btn-primary" id="shareBtn">Share</button>
@@ -865,7 +879,8 @@
 
     function renderResults(r) {
       currentFilter = FILTER_CSS[r.filter] ? r.filter : 'Vivid';
-      filterActive = false;
+      filterActive = true;
+      buildFilterStrip(currentFilter);
       updateFilterUI();
       $('sceneBadge').textContent = r.scene_type || 'Scene';
       const pills = (r.hashtags || []).map(h => '<div class="pill" data-tag="' + esc(h) + '">' + esc(h) + '</div>').join('');
@@ -878,11 +893,32 @@
     }
 
     /* ── Filter toggle ── */
+    // "Original" is first and is a real option, not an absence — turning the filter off should be
+    // as easy as turning it on, and the strip is the only place that choice now lives.
+    const NO_FILTER = 'Original';
+
+    function buildFilterStrip(recommended) {
+      const strip = $('filterStrip');
+      strip.innerHTML = '';
+      for (const name of [NO_FILTER, ...Object.keys(FILTER_CSS)]) {
+        const opt = document.createElement('button');
+        opt.className = 'filter-opt' + (name === recommended ? ' pick' : '');
+        opt.textContent = name;
+        opt.dataset.filter = name;
+        opt.addEventListener('click', () => {
+          filterActive = name !== NO_FILTER;
+          if (filterActive) currentFilter = name;
+          updateFilterUI();
+        });
+        strip.appendChild(opt);
+      }
+    }
+
     function updateFilterUI() {
       $('resultPhoto').style.filter = filterActive ? FILTER_CSS[currentFilter] : '';
-      const btn = $('filterBtn');
-      btn.textContent = filterActive ? currentFilter : 'Tap to preview filter';
-      btn.classList.toggle('active', filterActive);
+      const selected = filterActive ? currentFilter : NO_FILTER;
+      $('filterStrip').querySelectorAll('.filter-opt').forEach(
+        (o) => o.classList.toggle('on', o.dataset.filter === selected));
       $('saveBtn').textContent = filterActive ? 'Save with filter' : 'Save';
     }
 
@@ -968,7 +1004,6 @@
     $('shutter').addEventListener('click', scanScene);
     $('takePhotoBtn').addEventListener('click', takePhoto);
     $('rescanBtn').addEventListener('click', () => setCamState('idle'));
-    $('filterBtn').addEventListener('click', () => { filterActive = !filterActive; updateFilterUI(); });
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); startLive(); } else { stopLive(); show('home'); } });
