@@ -108,12 +108,23 @@
        Small HUD bits — the cue, the badge, the level bar — still float over the image, the way
        they do on any camera app. It was the large opaque panel that caused the mismatch. */
     #camera { background: #1a1a1a; }
-    #camera.active { display: flex; flex-direction: column; }
-    .viewfinder { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: #000; }
+    #camera.active { display: flex; flex-direction: column; justify-content: center; }
+    /* A fixed 3:4 frame — the shape a phone camera natively produces, and the shape every camera
+       app shows. Letting it fill the leftover space instead gave an arbitrary tall rectangle that
+       matched no standard photo, and forced a second crop off an already-cropped 16:9 stream.
+       Width is capped so the frame never grows taller than the space available, which keeps the
+       aspect exact instead of letting a max-height quietly squash it. */
+    .cam-frame {
+      position: relative; overflow: hidden; background: #000;
+      flex: 0 0 auto; margin: 0 auto;
+      width: min(100%, calc(72vh * 0.75));
+      width: min(100%, calc(72dvh * 0.75));
+      aspect-ratio: 3 / 4;
+    }
     .cam-controls {
-      flex: 0 0 auto; background: #141412;
-      padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
-      display: flex; flex-direction: column; align-items: center; gap: 12px;
+      flex: 0 1 auto; background: #141412;
+      padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
     }
     #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 
@@ -291,7 +302,7 @@
   <!-- ── Camera ── -->
   <section id="camera" class="screen">
     <!-- Everything inside here is the photograph. Nothing opaque may sit over it. -->
-    <div class="viewfinder" id="viewfinder">
+    <div class="cam-frame" id="camFrame">
       <video id="video" autoplay playsinline muted></video>
       <canvas id="liveOverlay"></canvas>
       <div id="coachCue" class="coach-cue">
@@ -590,7 +601,7 @@
     async function startCamera() {
       await requestMotion();     // must precede getUserMedia — see requestMotion
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
         $('video').srcObject = stream;
         hasCamera = true;
         setCamState('idle');
@@ -620,8 +631,8 @@
     async function switchLens(lens) {
       if (lens === currentLens) return;
       const constraints = (lens === 'ultra' && ultraDeviceId)
-        ? { video: { deviceId: { exact: ultraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }
-        : { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
+        ? { video: { deviceId: { exact: ultraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }
+        : { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false };
       try {
         const ns = await navigator.mediaDevices.getUserMedia(constraints);
         if (stream) stream.getTracks().forEach(t => t.stop());
@@ -846,6 +857,8 @@
     async function grabKeeperDataURL() {
       const v = $('video'); if (!v.videoWidth) return null;
       const c = visibleCrop(v);                        // same crop the user framed
+      // 2560 is above any track this asks for, so the keeper is saved at native resolution and
+      // this only guards against an unusually large sensor.
       const [w, h] = scaledSize(c.sw, c.sh, 2560);
       const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
       cv.getContext('2d').drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);

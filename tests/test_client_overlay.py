@@ -127,8 +127,8 @@ def test_visible_crop_matches_the_screen_aspect():
     """
     out = run_js(function_source("visibleCrop") + """
       const rows = [];
-      for (const [vw, vh] of [[1920,1080],[1080,1920],[1440,1440],[640,480]]) {
-        const c = visibleCrop({ videoWidth: vw, videoHeight: vh, clientWidth: 390, clientHeight: 844 });
+      for (const [vw, vh] of [[1920,1440],[1440,1920],[1440,1440],[640,480]]) {
+        const c = visibleCrop({ videoWidth: vw, videoHeight: vh, clientWidth: 390, clientHeight: 520 });
         rows.push({ vw, vh, ...c });
       }
       console.log(JSON.stringify(rows));
@@ -136,8 +136,8 @@ def test_visible_crop_matches_the_screen_aspect():
     for row in out:
         assert row["sw"] <= row["vw"] and row["sh"] <= row["vh"], "crop must fit inside the track"
         assert row["sx"] >= 0 and row["sy"] >= 0
-        assert row["sw"] / row["sh"] == pytest.approx(390 / 844, rel=0.01), (
-            f"crop aspect must match the screen for a {row['vw']}x{row['vh']} track"
+        assert row["sw"] / row["sh"] == pytest.approx(390 / 520, rel=0.01), (
+            f"crop aspect must match the frame for a {row['vw']}x{row['vh']} track"
         )
 
 
@@ -203,17 +203,17 @@ def region(name):
     raise AssertionError("unbalanced markup reading " + name)
 
 
-def test_the_video_is_inside_the_viewfinder():
+def test_the_video_is_inside_the_frame():
     """visibleCrop measures the video element, so the video element has to BE the photo area.
     While it filled the whole screen, the capture included a strip hidden behind the controls."""
-    assert 'id="video"' in region("viewfinder")
+    assert 'id="video"' in region("cam-frame")
 
 
 def test_the_controls_are_outside_the_viewfinder():
     """The bug: the tinted panel with Take Photo sat over the bottom of a full-screen video, so
     the shot extended past what the user could see. Someone framed to the visible edge came out
     higher in the photo than they had been placed."""
-    viewfinder = region("viewfinder")
+    viewfinder = region("cam-frame")
     for control in ('id="tipPanel"', 'id="camIdle"', 'id="lensToggle"', 'id="takePhotoBtn"'):
         assert control not in viewfinder, f"{control} is back inside the photo area"
 
@@ -239,17 +239,54 @@ def test_the_controls_do_not_float():
 def test_only_transient_huds_overlay_the_image():
     """A cue, a badge and a level bar over the picture are normal camera behaviour and stay. The
     test is that nothing opaque and tall joins them."""
-    viewfinder = region("viewfinder")
+    viewfinder = region("cam-frame")
     allowed = {
-        "viewfinder",                                   # the container itself
+        "camFrame",                                     # the container itself
         "video", "liveOverlay", "gridOverlay",          # the image and what is drawn on it
         "coachCue", "coachText", "statusChip",          # transient text
         "sceneBadgeTop",                                # small label
         "camLevel", "camLevelTrack", "camLevelDot", "camLevelVal",   # the level bar
     }
     found = set(re.findall(r'id="([\w-]+)"', viewfinder))
-    assert "video" in found, "the region helper is not reading the viewfinder"
+    assert "video" in found, "the region helper is not reading the frame"
     unexpected = found - allowed
     assert not unexpected, (
         f"{sorted(unexpected)} added over the photo area — is it meant to be in the shot?"
     )
+
+
+# ── native capture shape ─────────────────────────────────────────────────────
+
+def test_the_frame_is_a_standard_photo_shape():
+    """3:4, the shape a phone sensor natively produces and every camera app shows.
+
+    Letting the frame fill whatever space was left over gave an arbitrary tall rectangle matching
+    no standard photo, and meant a second crop off an already-cropped stream.
+    """
+    html = PAGE.read_text(encoding="utf-8")
+    rule = re.search(r"\.cam-frame\s*\{([^}]*)\}", html)
+    assert rule, "no .cam-frame rule"
+    assert "aspect-ratio: 3 / 4" in rule.group(1), "the frame is no longer a standard photo shape"
+
+
+def test_the_camera_is_asked_for_a_matching_aspect():
+    """16:9 is already a crop of a 4:3 sensor, so asking for it threw pixels away before the frame
+    had even cropped. Every getUserMedia call should ask for 4:3."""
+    html = PAGE.read_text(encoding="utf-8")
+    requests = re.findall(r"width: \{ ideal: (\d+) \}, height: \{ ideal: (\d+) \}", html)
+    assert requests, "no camera resolution constraints found"
+    for w, h in requests:
+        ratio = int(w) / int(h)
+        assert ratio == pytest.approx(4 / 3, rel=0.01), (
+            f"camera asked for {w}x{h} ({ratio:.2f}), which is not the sensor's 4:3"
+        )
+
+
+def test_the_home_screen_frame_is_not_the_camera_frame():
+    """Both were once called .viewfinder, so the camera rule leaked onto the home screen — its
+    corner marks sit outside their box and overflow:hidden clipped them, on a black background."""
+    html = PAGE.read_text(encoding="utf-8")
+    home = re.search(r"^    \.viewfinder\s*\{([^}]*)\}", html, re.M)
+    assert home, "home .viewfinder rule not found"
+    for leaked in ("overflow: hidden", "background: #000", "aspect-ratio"):
+        assert leaked not in home.group(1), f"camera styling has leaked onto the home frame: {leaked}"
