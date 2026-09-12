@@ -400,3 +400,75 @@ def test_the_model_is_configured_with_raised_confidence_floors():
         match = re.search(option + r":\s*([0-9.]+)", page)
         assert match, f"{option} is not set — the 0.5 default is too eager for this use"
         assert float(match.group(1)) >= 0.7, f"{option} dropped to {match.group(1)}"
+
+
+# ── retake: another shot of the same setup ───────────────────────────────────
+
+ANALYSIS = """
+  analysisResult = {
+    scene_type: 'Cafe',
+    placement: { x: 0.333, y: 0.70, reason: 'light', reason_text: 'Light falls on your face' },
+    camera_tilt: { direction: 'down', reason: 'Empty space above' },
+    composition: { horizon: 'Tilted' },
+    placement_hint: 'Stand in front of the blue door',
+    lighting: { quality: 'Good' },
+    hashtags: [],
+    filter: 'Vivid',
+  };
+"""
+
+
+def test_retake_restores_the_coaching_state():
+    """The whole point: the scene has not changed, so the same marker should come straight back."""
+    out = run(ANALYSIS + """
+      motionGranted = true;
+      resetCoaching();                 // as stopLive() does on the way to the results screen
+      retake();
+      console.log(JSON.stringify({
+        coachingActive, standPos, standReason, tiltHint, needsStraightening,
+      }));
+    """)
+    assert out["coachingActive"] is True
+    assert out["standPos"] == {"x": 0.333, "y": 0.70}
+    assert out["standReason"] == "Light falls on your face"
+    assert out["tiltHint"] == "Empty space above"
+    assert out["needsStraightening"] is True
+
+
+def test_retake_costs_no_api_call():
+    """The reason it exists. Re-scanning an unchanged scene costs a wait and two OpenAI calls to
+    put the marker in exactly the same place."""
+    out = run(ANALYSIS + """
+      let fetches = 0;
+      globalThis.fetch = () => { fetches++; return Promise.reject(new Error('x')); };
+      resetCoaching();
+      retake();
+      console.log(JSON.stringify({ fetches }));
+    """)
+    assert out["fetches"] == 0, "retake must not re-analyse the scene"
+
+
+def test_retake_does_nothing_without_an_analysis():
+    """Defensive: the button is only reachable from the results screen, but a stale tap or a
+    restored session should not put the app into coaching with no marker to show."""
+    out = run("""
+      analysisResult = null;
+      retake();
+      console.log(JSON.stringify({ coachingActive, standPos }));
+    """)
+    assert out["coachingActive"] is False
+    assert out["standPos"] is None
+
+
+def test_a_scan_and_a_retake_produce_the_same_coaching_state():
+    """Both go through beginCoaching, so they cannot drift apart. This is why it was extracted."""
+    out = run(ANALYSIS + """
+      motionGranted = true;
+      beginCoaching(analysisResult);
+      const afterScan = { standPos: { ...standPos }, standReason, tiltHint, needsStraightening };
+      resetCoaching();
+      retake();
+      const afterRetake = { standPos: { ...standPos }, standReason, tiltHint, needsStraightening };
+      console.log(JSON.stringify({ afterScan, afterRetake }));
+    """)
+    assert out["afterScan"] == out["afterRetake"]

@@ -223,7 +223,11 @@
     .btn:active { transform: scale(0.97); }
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-secondary { background: var(--bg); color: var(--accent); border: 1.5px solid var(--accent); }
+    /* Retake sits beside Scan again rather than above it: both are "not done yet", and giving
+       retake its own button would outweigh Share, which is still the point of the screen. */
+    .after-shot { display: flex; gap: 24px; align-items: center; }
     .scan-again { font-size: 14px; color: var(--text2); padding: 6px; }
+    #retakeBtn { color: var(--accent); font-weight: 600; }
 
     /* toast */
     .toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: #fff; padding: 10px 20px; border-radius: 10px; font-size: 14px; z-index: 100; opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 80%; text-align: center; }
@@ -324,7 +328,10 @@
       <div class="bottom">
         <button class="btn btn-primary" id="shareBtn">Share</button>
         <button class="btn btn-secondary" id="saveBtn">Save</button>
-        <div class="scan-again" id="scanAgain">Scan again</div>
+        <div class="after-shot">
+          <span class="scan-again" id="retakeBtn">Retake</span>
+          <span class="scan-again" id="scanAgain">Scan again</span>
+        </div>
       </div>
     </div>
   </section>
@@ -816,33 +823,48 @@
         // capture gate: block on poor light or a blurry frame — force a rescan
         if (analysisResult.lighting && analysisResult.lighting.quality === 'Poor') { openGate('Not enough light — find a brighter spot, then scan again.'); return; }
         if (analysisResult.blurry) { openGate('That shot was blurry — hold steady, then scan again.'); return; }
-        renderTips(analysisResult);
-        // Where the subject should stand; fall back to a plain rule-of-thirds point.
-        // != null, not truthiness: a legitimate 0 coordinate must not fall through to the default.
-        const p = analysisResult.placement;
-        standPos = (p && p.x != null && p.y != null) ? { x: p.x, y: p.y } : { x: 1/3, y: 2/3 };
-        standReason = (p && p.reason_text) || '';
-
-        // camera_tilt is advisory: only cue when the engine actually found dead space AND gave
-        // wording for it. Older responses have neither.
-        const tilt = analysisResult.camera_tilt;
-        tiltHint = (tilt && tilt.direction && tilt.direction !== 'ok' && tilt.reason) ? tilt.reason : null;
-
-        // composition.horizon describes the SCANNED frame, not the phone right now — so it only
-        // opens the prompt. The live gravity reading decides when it is satisfied.
-        const horizon = (analysisResult.composition || {}).horizon;
-        // Without a roll reading we cannot tell when it has been fixed, so never open a cue we
-        // could not close.
-        needsStraightening = motionGranted && !!horizon && horizon !== 'Level';
-
-        coachingActive = true;
-        $('coachCue').classList.add('show');
-        setCue('Have them stand on the marker');
-        setCamState('tips');
+        beginCoaching(analysisResult);
       } catch (e) {
         setCamState('idle');
         toast(errMsg(e));
       }
+    }
+
+    // Everything needed to coach from one analysis. Called by a fresh scan and by Retake, so the
+    // two can never drift into subtly different states.
+    function beginCoaching(r) {
+      renderTips(r);
+
+      // Where the subject should stand; fall back to a plain rule-of-thirds point.
+      // != null, not truthiness: a legitimate 0 coordinate must not fall through to the default.
+      const p = r.placement;
+      standPos = (p && p.x != null && p.y != null) ? { x: p.x, y: p.y } : { x: 1/3, y: 2/3 };
+      standReason = (p && p.reason_text) || '';
+
+      // camera_tilt is advisory: only cue when the engine actually found dead space AND gave
+      // wording for it. Older responses have neither.
+      const tilt = r.camera_tilt;
+      tiltHint = (tilt && tilt.direction && tilt.direction !== 'ok' && tilt.reason) ? tilt.reason : null;
+
+      // composition.horizon describes the SCANNED frame, not the phone right now — so it only
+      // opens the prompt. The live gravity reading decides when it is satisfied. Without a roll
+      // reading we cannot tell when it has been fixed, so never open a cue we could not close.
+      const horizon = (r.composition || {}).horizon;
+      needsStraightening = motionGranted && !!horizon && horizon !== 'Level';
+
+      coachingActive = true;
+      $('coachCue').classList.add('show');
+      setCue('Get them in frame');
+      setCamState('tips');
+    }
+
+    // Another shot of the same setup. The scene has not changed, so re-analysing it would cost a
+    // wait and two OpenAI calls to place the marker in exactly the same spot.
+    function retake() {
+      if (!analysisResult) return;
+      show('camera');
+      startLive();
+      beginCoaching(analysisResult);
     }
 
     function renderTips(r) {
@@ -971,6 +993,7 @@
     $('filterBtn').addEventListener('click', () => { filterActive = !filterActive; updateFilterUI(); });
     $('shareBtn').addEventListener('click', () => shareOrSave(true));
     $('saveBtn').addEventListener('click', () => shareOrSave(false));
+    $('retakeBtn').addEventListener('click', retake);
     $('scanAgain').addEventListener('click', () => { if (hasCamera) { setCamState('idle'); show('camera'); startLive(); } else { stopLive(); show('home'); } });
     $('gateScanAgain').addEventListener('click', closeGate);
 
