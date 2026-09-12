@@ -106,7 +106,10 @@ def test_warm_grades_actually_tint_warm(name):
     while plain Vivid — with no warm grade at all — measured warmer overall."""
     graded = grade(NEUTRAL)[name]
     for label, rgb in graded.items():
-        assert tint_of(rgb) >= 12, f"{name} barely warms a neutral {label}: {rgb}"
+        # 16, not 12: the sepia grade this replaced measured exactly +12 on grey, so a threshold
+        # of 12 would happily accept the very grade that prompted the rewrite. The new grades sit
+        # at +25 and +19, so this splits them cleanly rather than sitting on the boundary.
+        assert tint_of(rgb) >= 16, f"{name} barely warms a neutral {label}: {rgb}"
 
 
 @pytest.mark.parametrize("name", COOL)
@@ -130,11 +133,16 @@ def test_the_untinted_grades_stay_untinted(name):
 def test_the_tint_is_noticeable_but_not_a_costume():
     """Subtle and noticeable are both requirements. Silvertone — which was judged fine — tints a
     neutral by +15, so that is the reference for tasteful; past about 35 a grade stops looking like
-    white balance and starts looking like a novelty."""
+    white balance and starts looking like a novelty.
+
+    The upper bound is the point of this test. The lower bounds that actually discriminate live in
+    the two direction tests above, which are tuned per direction — warm is deliberately stronger
+    than cool, so a single shared floor here would be wrong for one of them.
+    """
     graded = grade(NEUTRAL)
     for name in WARM + COOL:
         shift = abs(tint_of(graded[name]["grey"]))
-        assert 12 <= shift <= 35, f"{name} shifts grey by {shift}, outside the tasteful band"
+        assert 10 <= shift <= 35, f"{name} shifts grey by {shift}, outside the tasteful band"
 
 
 @pytest.mark.parametrize("name", WARM + COOL)
