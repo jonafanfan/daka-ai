@@ -23,12 +23,26 @@ PAGE = Path(__file__).resolve().parents[1] / "web" / "index.html"
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 
 
+def cue_reserved_px():
+    """How much of the viewfinder bottom the cue pill occupies.
+
+    Read from the page rather than restated here: when the controls moved out of the viewfinder
+    this number changed, and a test carrying its own copy would have gone on asserting the old
+    geometry while passing.
+    """
+    html = PAGE.read_text(encoding="utf-8")
+    m = re.search(r"const CUE_RESERVED_PX = (\d+);", html)
+    assert m, "CUE_RESERVED_PX not found in the page"
+    return int(m.group(1))
+
+
 def function_source(name):
-    """Pull one top-level function out of the page, verbatim."""
+    """Pull one top-level function out of the page, plus the constants it closes over."""
     html = PAGE.read_text(encoding="utf-8")
     match = re.search(r"^    (?:async )?function " + name + r"\(.*?^    \}$", html, re.S | re.M)
     assert match, f"{name} not found in {PAGE.name}"
-    return match.group(0)
+    preamble = "const CUE_RESERVED_PX = %d;\n" % cue_reserved_px()
+    return preamble + match.group(0)
 
 
 def run_js(script):
@@ -130,11 +144,8 @@ def test_visible_crop_matches_the_screen_aspect():
 # ── caption placement vs the cue pill ────────────────────────────────────────
 
 def test_caption_flips_above_the_marker_when_the_cue_pill_would_cover_it():
-    """placement.y tops out at 0.72, and at that height the caption lands under the cue pill.
-
-    The pill is anchored 160px off the bottom, so a caption below roughly H-205 is unreadable.
-    Rather than let it hide, it flips above the footprint.
-    """
+    """placement.y tops out at 0.72. A caption below the cue pill is unreadable, so it flips
+    above the footprint rather than hiding. The reserved height comes from the page."""
     out = run_js(function_source("drawStandMarker") + STUB_CTX + """
       const H = 844, rows = [];
       for (const y of [0.60, 0.667, 0.72]) {
@@ -144,8 +155,9 @@ def test_caption_flips_above_the_marker_when_the_cue_pill_would_cover_it():
       }
       console.log(JSON.stringify(rows));
     """)
+    reserved = cue_reserved_px()
     for row in out:
-        clear_of_pill = row["capY"] <= 844 - 205
+        clear_of_pill = row["capY"] <= 844 - reserved
         above_marker = row["capY"] < row["footY"]
         assert clear_of_pill or above_marker, (
             f"at y={row['y']} the caption sits at {row['capY']}, under the cue pill"
@@ -159,3 +171,85 @@ def test_a_high_marker_still_captions_below():
       console.log(JSON.stringify({ capY: called[0].y, footY: 0.60 * 844 }));
     """)
     assert out["capY"] > out["footY"], "should still sit below when there is room"
+
+
+# ── the photo area and the controls are separate regions ─────────────────────
+
+def camera_section():
+    html = PAGE.read_text(encoding="utf-8")
+    m = re.search(r'<section id="camera".*?</section>', html, re.S)
+    assert m, "camera section not found"
+    return m.group(0)
+
+
+def region(name):
+    """The markup inside one region of the camera screen.
+
+    Depth starts at 1, not 0: the opening <div> sits before the class attribute we search from, so
+    counting from zero stops at the first *nested* close and silently returns a truncated region.
+    That version made two of these tests pass by looking at the wrong markup.
+    """
+    section = camera_section()
+    start = section.index('class="' + name + '"')
+    depth, i = 1, section.index(">", start)
+    while i < len(section):
+        if section.startswith("<div", i):
+            depth += 1
+        elif section.startswith("</div>", i):
+            depth -= 1
+            if depth == 0:
+                return section[start:i]
+        i += 1
+    raise AssertionError("unbalanced markup reading " + name)
+
+
+def test_the_video_is_inside_the_viewfinder():
+    """visibleCrop measures the video element, so the video element has to BE the photo area.
+    While it filled the whole screen, the capture included a strip hidden behind the controls."""
+    assert 'id="video"' in region("viewfinder")
+
+
+def test_the_controls_are_outside_the_viewfinder():
+    """The bug: the tinted panel with Take Photo sat over the bottom of a full-screen video, so
+    the shot extended past what the user could see. Someone framed to the visible edge came out
+    higher in the photo than they had been placed."""
+    viewfinder = region("viewfinder")
+    for control in ('id="tipPanel"', 'id="camIdle"', 'id="lensToggle"', 'id="takePhotoBtn"'):
+        assert control not in viewfinder, f"{control} is back inside the photo area"
+
+
+def test_the_controls_region_exists_and_holds_them():
+    controls = region("cam-controls")
+    for control in ('id="tipPanel"', 'id="camIdle"', 'id="lensToggle"'):
+        assert control in controls, f"{control} is not in the controls strip"
+
+
+def test_the_controls_do_not_float():
+    """A control positioned absolutely would drift back over the image even from outside the
+    viewfinder markup, which is how this regressed in the first place."""
+    html = PAGE.read_text(encoding="utf-8")
+    for selector in (r"\.cam-controls", r"\.tip-panel", r"\.cam-idle"):
+        rule = re.search(selector + r"\s*\{([^}]*)\}", html)
+        assert rule, f"no CSS rule for {selector}"
+        assert "position: absolute" not in rule.group(1), (
+            f"{selector} is absolutely positioned and can cover the photo again"
+        )
+
+
+def test_only_transient_huds_overlay_the_image():
+    """A cue, a badge and a level bar over the picture are normal camera behaviour and stay. The
+    test is that nothing opaque and tall joins them."""
+    viewfinder = region("viewfinder")
+    allowed = {
+        "viewfinder",                                   # the container itself
+        "video", "liveOverlay", "gridOverlay",          # the image and what is drawn on it
+        "coachCue", "coachText", "statusChip",          # transient text
+        "sceneBadgeTop",                                # small label
+        "camLevel", "camLevelTrack", "camLevelDot", "camLevelVal",   # the level bar
+    }
+    found = set(re.findall(r'id="([\w-]+)"', viewfinder))
+    assert "video" in found, "the region helper is not reading the viewfinder"
+    unexpected = found - allowed
+    assert not unexpected, (
+        f"{sorted(unexpected)} added over the photo area — is it meant to be in the shot?"
+    )
