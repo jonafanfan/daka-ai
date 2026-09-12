@@ -99,7 +99,33 @@
     .hint { font-size: 13px; color: var(--text2); }
 
     /* ─── Camera ─── */
+    /* The viewfinder gets its own region and the controls sit BELOW it, rather than floating on
+       top of a full-screen video. When they overlapped, the photo captured the strip hidden
+       behind the control panel: you framed someone using what you could see, and the shot came
+       out with them higher than you placed them, because the frame extended past the bottom of
+       what was visible. Now the video element IS the photo area, so visibleCrop measures the
+       right thing without knowing anything about the controls.
+       Small HUD bits — the cue, the badge, the level bar — still float over the image, the way
+       they do on any camera app. It was the large opaque panel that caused the mismatch. */
     #camera { background: #1a1a1a; }
+    #camera.active { display: flex; flex-direction: column; justify-content: center; }
+    /* A fixed 3:4 frame — the shape a phone camera natively produces, and the shape every camera
+       app shows. Letting it fill the leftover space instead gave an arbitrary tall rectangle that
+       matched no standard photo, and forced a second crop off an already-cropped 16:9 stream.
+       Width is capped so the frame never grows taller than the space available, which keeps the
+       aspect exact instead of letting a max-height quietly squash it. */
+    .cam-frame {
+      position: relative; overflow: hidden; background: #000;
+      flex: 0 0 auto; margin: 0 auto;
+      width: min(100%, calc(72vh * 0.75));
+      width: min(100%, calc(72dvh * 0.75));
+      aspect-ratio: 3 / 4;
+    }
+    .cam-controls {
+      flex: 0 1 auto; background: #141412;
+      padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    }
     #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 
     .grid-overlay { position: absolute; inset: 0; pointer-events: none; display: none; }
@@ -116,10 +142,7 @@
     }
 
     /* idle shutter */
-    .cam-idle {
-      position: absolute; left: 0; right: 0; bottom: calc(40px + env(safe-area-inset-bottom));
-      display: flex; flex-direction: column; align-items: center; gap: 14px;
-    }
+    .cam-idle { display: flex; flex-direction: column; align-items: center; gap: 10px; }
     .shutter { width: 76px; height: 76px; border-radius: 50%; background: rgba(255,255,255,0.2); border: 4px solid #fff; display: flex; align-items: center; justify-content: center; }
     .shutter:active { transform: scale(0.92); }
     .shutter-inner { width: 56px; height: 56px; border-radius: 50%; background: #fff; }
@@ -139,7 +162,7 @@
     /* live detection overlay + chips */
     #liveOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 23; }
     .coach-cue {
-      position: absolute; left: 50%; bottom: calc(160px + env(safe-area-inset-bottom));
+      position: absolute; left: 50%; bottom: 16px;
       transform: translateX(-50%); display: none; align-items: center; gap: 8px;
       background: rgba(0,0,0,0.6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
       padding: 8px 18px; border-radius: 100px; z-index: 27;
@@ -153,7 +176,7 @@
     .status-chip.warn { background: rgba(200,90,60,0.9); }
 
     /* lens toggle (1× / 0.5×) */
-    .lens-toggle { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(150px + env(safe-area-inset-bottom)); z-index: 26; display: none; gap: 2px; background: rgba(0,0,0,0.45); border-radius: 100px; padding: 3px; }
+    .lens-toggle { display: none; gap: 2px; background: rgba(255,255,255,0.10); border-radius: 100px; padding: 3px; }
     .lens-toggle.show { display: flex; }
     .lens-opt { color: rgba(255,255,255,0.7); font-size: 13px; padding: 5px 14px; border-radius: 100px; }
     .lens-opt.active { background: rgba(255,255,255,0.92); color: #1a1a1a; }
@@ -171,13 +194,7 @@
     .loading-text { color: #fff; font-size: 15px; }
 
     /* tip panel (overlays live camera) */
-    .tip-panel {
-      position: absolute; left: 0; right: 0; bottom: 0;
-      background: rgba(20,20,18,0.78); border-radius: 16px 16px 0 0;
-      padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
-      display: none; animation: slideUp 0.3s ease;
-    }
-    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .tip-panel { width: 100%; display: none; }
 
     /* The one line of plain-English placement advice. Sits directly above the shutter because
        that is where the eye already goes, and because the canvas caption under the marker cannot
@@ -284,44 +301,50 @@
 
   <!-- ── Camera ── -->
   <section id="camera" class="screen">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="liveOverlay"></canvas>
-    <div id="coachCue" class="coach-cue">
-      <span id="coachText">Have them stand on the marker</span>
+    <!-- Everything inside here is the photograph. Nothing opaque may sit over it. -->
+    <div class="cam-frame" id="camFrame">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="liveOverlay"></canvas>
+      <div id="coachCue" class="coach-cue">
+        <span id="coachText">Have them stand on the marker</span>
+      </div>
+
+      <div class="status-chip" id="statusChip"></div>
+
+      <div class="grid-overlay" id="gridOverlay">
+        <div class="grid-line grid-h1"></div><div class="grid-line grid-h2"></div>
+        <div class="grid-line grid-v1"></div><div class="grid-line grid-v2"></div>
+      </div>
+
+      <div class="scene-badge-top" id="sceneBadgeTop"></div>
+
+      <!-- level slider (device tilt) -->
+      <div id="camLevel">
+        <div id="camLevelTrack"><div id="camLevelDot"></div></div>
+        <span id="camLevelVal">0°</span>
+      </div>
     </div>
 
-    <div class="status-chip" id="statusChip"></div>
+    <!-- Controls live outside the frame, so they cannot hide part of the shot. -->
+    <div class="cam-controls">
+      <!-- lens toggle (shown only if an ultra-wide camera exists) -->
+      <div class="lens-toggle" id="lensToggle">
+        <span class="lens-opt active" data-lens="wide">1×</span>
+        <span class="lens-opt" data-lens="ultra">0.5×</span>
+      </div>
 
-    <div class="grid-overlay" id="gridOverlay">
-      <div class="grid-line grid-h1"></div><div class="grid-line grid-h2"></div>
-      <div class="grid-line grid-v1"></div><div class="grid-line grid-v2"></div>
-    </div>
+      <!-- idle: shutter -->
+      <div class="cam-idle" id="camIdle">
+        <div class="shutter" id="shutter"><div class="shutter-inner"></div></div>
+        <div class="shutter-hint">Point at an empty scene and tap</div>
+      </div>
 
-    <div class="scene-badge-top" id="sceneBadgeTop"></div>
-
-    <!-- level slider (device tilt) -->
-    <div id="camLevel">
-      <div id="camLevelTrack"><div id="camLevelDot"></div></div>
-      <span id="camLevelVal">0°</span>
-    </div>
-
-    <!-- idle: shutter -->
-    <div class="cam-idle" id="camIdle">
-      <div class="shutter" id="shutter"><div class="shutter-inner"></div></div>
-      <div class="shutter-hint">Point at an empty scene and tap</div>
-    </div>
-
-    <!-- lens toggle (shown only if an ultra-wide camera exists) -->
-    <div class="lens-toggle" id="lensToggle">
-      <span class="lens-opt active" data-lens="wide">1×</span>
-      <span class="lens-opt" data-lens="ultra">0.5×</span>
-    </div>
-
-    <!-- tips panel -->
-    <div class="tip-panel" id="tipPanel">
-      <div class="place-hint" id="placeHint"></div>
-      <button class="take-photo" id="takePhotoBtn">Take Photo</button>
-      <span class="rescan" id="rescanBtn">Scan again</span>
+      <!-- tips panel -->
+      <div class="tip-panel" id="tipPanel">
+        <div class="place-hint" id="placeHint"></div>
+        <button class="take-photo" id="takePhotoBtn">Take Photo</button>
+        <span class="rescan" id="rescanBtn">Scan again</span>
+      </div>
     </div>
 
     <!-- loading -->
@@ -578,7 +601,7 @@
     async function startCamera() {
       await requestMotion();     // must precede getUserMedia — see requestMotion
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
         $('video').srcObject = stream;
         hasCamera = true;
         setCamState('idle');
@@ -608,8 +631,8 @@
     async function switchLens(lens) {
       if (lens === currentLens) return;
       const constraints = (lens === 'ultra' && ultraDeviceId)
-        ? { video: { deviceId: { exact: ultraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }
-        : { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false };
+        ? { video: { deviceId: { exact: ultraDeviceId }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false }
+        : { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false };
       try {
         const ns = await navigator.mediaDevices.getUserMedia(constraints);
         if (stream) stream.getTracks().forEach(t => t.stop());
@@ -666,12 +689,11 @@
         const halfText = ctx.measureText(label).width / 2 + 10;
         const lx = Math.min(W - halfText, Math.max(halfText, fx));
 
-        // The cue pill is anchored 160px off the bottom and is roughly 37px tall, so anything
-        // below this line gets covered by it. When the marker sits low in the frame — which it
-        // does whenever placement.y is near its 0.72 ceiling — the caption lands right underneath
-        // and is unreadable. Flip it above the footprint instead of letting it hide.
+        // The cue pill sits at the bottom of the viewfinder and is roughly 37px tall, so a
+        // caption below this line is hidden behind it. Flip it above the footprint rather than
+        // let it hide. Named so the test can read the same number instead of restating it.
         const font = Math.max(12, Math.round(H * 0.021));
-        const cueTop = H - 205;
+        const cueTop = H - CUE_RESERVED_PX;
         if (fy + rh + 10 + font <= cueTop) {
           ctx.textBaseline = 'top';
           ctx.fillText(label, lx, fy + rh + 10);
@@ -835,6 +857,8 @@
     async function grabKeeperDataURL() {
       const v = $('video'); if (!v.videoWidth) return null;
       const c = visibleCrop(v);                        // same crop the user framed
+      // 2560 is above any track this asks for, so the keeper is saved at native resolution and
+      // this only guards against an unusually large sensor.
       const [w, h] = scaledSize(c.sw, c.sh, 2560);
       const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
       cv.getContext('2d').drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
@@ -953,6 +977,8 @@
     // "Original" is first and is a real option, not an absence — turning the filter off should be
     // as easy as turning it on, and the strip is the only place that choice now lives.
     const NO_FILTER = 'Original';
+    // Bottom strip of the viewfinder occupied by the cue pill: 16px offset plus its height.
+    const CUE_RESERVED_PX = 60;
 
     function buildFilterStrip(recommended) {
       const strip = $('filterStrip');
