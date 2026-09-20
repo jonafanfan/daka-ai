@@ -121,7 +121,10 @@ const navigator = { mediaDevices: { getUserMedia(){ return Promise.reject(new Er
 const requestAnimationFrame = () => { rafCount++; return 1; };
 const cancelAnimationFrame = () => {};
 const performance = { now: () => 1000 };
-const fetch = () => Promise.reject(new Error('offline'));
+// `let`, not `const`: a test that needs to answer a request replaces this binding, and the
+// page resolves the identifier here rather than on globalThis, so a globalThis assignment
+// silently does nothing.
+let fetch = () => Promise.reject(new Error('offline'));
 """
 
 
@@ -788,6 +791,135 @@ def test_retake_costs_no_api_call():
       console.log(JSON.stringify({ fetches }));
     """)
     assert out["fetches"] == 0, "retake must not re-analyse the scene"
+
+
+# ── the split scan ────────────────────────────────────────────────────────────
+#
+# The marker comes from /measure and the words from /describe, which took between 3.7 and 11.1
+# seconds for the same image. These drive the real scanScene with /describe held open, which is
+# the state the user actually stands in.
+
+SPLIT_STUB = """
+  const MEASURED = {
+    lighting: { quality: 'Good' },
+    blurry: false,
+    placement: { x: 0.667, y: 0.88, reason: 'light', reason_text: 'Light falls on your face' },
+    camera_tilt: { direction: 'ok', reason: '' },
+    composition: {},
+  };
+  const urls = [];
+  let settleDescribe, failDescribe;
+  globalThis.FormData = class { append(k, v) { (this.sent ||= []).push([k, String(v)]); } };
+  fetch = (url) => {
+    urls.push(url);
+    if (String(url).includes('/measure')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(MEASURED) });
+    }
+    if (String(url).includes('/describe')) {
+      return new Promise((resolve, reject) => {
+        settleDescribe = (body) => resolve({ ok: true, json: () => Promise.resolve(body) });
+        failDescribe = () => reject(new Error('describe failed'));
+      });
+    }
+    return Promise.reject(new Error('unexpected call to ' + url));
+  };
+  const later = (fn) => setTimeout(fn, 10);
+  // /describe is deliberately left open in some of these, and postScan's 60s abort
+  // timer is only cleared when a request settles — so say the answer and go.
+  const done = (o) => process.stdout.write(JSON.stringify(o) + '\\n', () => process.exit(0));
+"""
+
+
+def test_the_marker_is_up_before_the_model_answers():
+    """The whole reason for the split. /describe is still open when this asserts."""
+    out = run(SPLIT_STUB + """
+      scanScene().then(() => later(() => done({
+        coaching: coachingActive,
+        standPos,
+        reason: standReason,
+        sceneType: analysisResult.scene_type ?? null,
+        measured: urls.filter(u => String(u).includes('/measure')).length,
+      })));
+    """)
+    assert out["coaching"] is True, "coaching did not start from /measure alone"
+    assert out["standPos"] == {"x": 0.667, "y": 0.88}
+    assert out["reason"] == "Light falls on your face"
+    assert out["measured"] == 1
+    assert out["sceneType"] is None, "the scene name arrived before /describe answered"
+
+
+def test_the_words_land_when_describe_answers():
+    out = run(SPLIT_STUB + """
+      scanScene().then(() => later(() => {
+        settleDescribe({ scene_type: 'Cafe', placement_hint: 'Stand by the wall',
+                         filter: 'Vivid Warm', hashtags: ['#a'] });
+        later(() => done({
+          scene: analysisResult.scene_type,
+          hint: analysisResult.placement_hint,
+          filter: analysisResult.filter,
+          stillCoaching: coachingActive,
+        }));
+      }));
+    """)
+    assert out["scene"] == "Cafe"
+    assert out["hint"] == "Stand by the wall"
+    assert out["filter"] == "Vivid Warm"
+    assert out["stillCoaching"] is True
+
+
+def test_a_describe_that_fails_leaves_the_coaching_alone():
+    """A failed vision call costs the scene name and the hint. It must not cost the marker, which
+    never needed the model in the first place."""
+    out = run(SPLIT_STUB + """
+      scanScene().then(() => later(() => {
+        failDescribe();
+        later(() => done({
+          coaching: coachingActive,
+          standPos,
+          scene: analysisResult.scene_type ?? null,
+        }));
+      }));
+    """)
+    assert out["coaching"] is True
+    assert out["standPos"] == {"x": 0.667, "y": 0.88}
+    assert out["scene"] is None
+
+
+def test_a_late_describe_cannot_paint_over_a_newer_scan():
+    """Rescan while the first /describe is in flight and let it answer afterwards. Without the
+    token it writes the old scene's hint over the one you are now pointing at."""
+    out = run(SPLIT_STUB + """
+      scanScene().then(() => later(() => {
+        scanToken += 1;                       // as a rescan does
+        settleDescribe({ scene_type: 'Stale', placement_hint: 'somewhere else' });
+        later(() => done({
+          scene: analysisResult.scene_type ?? null,
+          hint: analysisResult.placement_hint ?? null,
+        }));
+      }));
+    """)
+    assert out["scene"] is None, "a stale response overwrote the current scan"
+    assert out["hint"] is None
+
+
+def test_describe_is_asked_for_exactly_once_per_scan():
+    out = run(SPLIT_STUB + """
+      scanScene().then(() => later(() => done({
+        described: urls.filter(u => String(u).includes('/describe')).length,
+      })));
+    """)
+    assert out["described"] == 1
+
+
+def test_the_scene_badge_stays_empty_until_the_name_arrives():
+    """It fell back to the word "Scene", which was fine when the field always arrived with
+    everything else. Split apart it would read "Scene" for seconds and then swap."""
+    page = PAGE.read_text(encoding="utf-8")
+    badge = re.search(r"\$\('sceneBadgeTop'\)\.textContent = ([^;]+);", page)
+    assert badge, "the scene badge assignment moved"
+    assert "res.scene" not in badge.group(1), (
+        f"the badge still falls back to a placeholder: {badge.group(1)}"
+    )
 
 
 # ── share vs save ────────────────────────────────────────────────────────────
