@@ -1,8 +1,26 @@
 # `/analyze` Response Contract
 
-**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.17` (shipped)
+**Owner:** AI Engine (@Zuil909) · **Consumers:** `web/index.html` · **Version:** `0.18` (shipped)
 
 > **Recent changes**
+>
+> - **`0.18` — the scan splits into two routes (additive).** `POST /measure` returns the measured
+>   half (`placement`, `camera_tilt`, `lighting`, `blurry`, `blur_var`, `edge_sharpness`,
+>   `composition`, `blueprint`) with no moderation and no model call, so it answers in well under a
+>   second. `POST /describe` returns the model's half (`scene_type`, `placement_hint`, `hashtags`,
+>   `filter`) and carries both OpenAI calls. Together they return exactly the fields `/analyze`
+>   does, and nothing appears in both.
+>
+>   `/analyze` is unchanged and still returns everything in one call. A cached copy of the old page
+>   keeps working, and the file-picker path still uses it because it has no coaching to get on with.
+>
+>   `/describe` takes an optional `side` form field, `"left"` or `"right"`, which is where
+>   `/measure` put the marker. It lets the model's sentence agree with the geometry, which came
+>   free when both halves ran in one call. Any other value is ignored rather than guessed.
+>
+>   **Why:** the same image measured 3.7s, 5.2s and 11.1s through `/analyze` on three consecutive
+>   runs. All of that is the two OpenAI round trips; the OpenCV work is about 30ms. The marker
+>   never needed the model, so the user no longer waits for it.
 >
 > - **`0.17` — `placement.y` moves to the bottom of the frame (behavioural).** The band was
 >   `0.62 / 0.667 / 0.70` and is now `0.84 / 0.88 / 0.90`. `y` is where a standing subject's FEET

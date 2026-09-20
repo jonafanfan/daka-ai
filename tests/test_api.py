@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api_server
+import scene_analysis
 from scene_analysis import InappropriateImageError
 
 JPEG = "image/jpeg"
@@ -32,6 +33,27 @@ def ok_analysis(monkeypatch):
     result = {"scene_type": "Cafe", "lighting": {"quality": "Good"}, "blurry": False}
     monkeypatch.setattr(api_server, "analyze_scene", lambda path, lang="en": result)
     return result
+
+
+@pytest.fixture
+def real_jpeg():
+    """Bytes that cv2 and PIL can genuinely decode.
+
+    Most tests here never reach the engine, so fake bytes are enough. /measure does reach it: it
+    runs the whole OpenCV pipeline, and undecodable bytes come back as a 400 that would look like
+    a passing test.
+    """
+    import cv2
+    import numpy as np
+
+    h, w, cell = 240, 320, 16
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    for y in range(0, h, cell):
+        for x in range(0, w, cell):
+            img[y:y + cell, x:x + cell] = 225 if ((y // cell) + (x // cell)) % 2 == 0 else 30
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    return buf.tobytes()
 
 
 def upload(content=b"\xff\xd8\xff\xe0fake jpeg bytes", content_type=JPEG, name="photo.jpg"):
@@ -106,6 +128,95 @@ def test_temp_file_is_cleaned_up_even_on_failure(client, monkeypatch):
     assert client.post("/analyze", files=upload()).status_code == 500
     import os
     assert not os.path.exists(seen["path"])
+
+
+# ── the split scan ──
+#
+# /measure is the half the user waits on, so the thing worth pinning is what it does NOT do: no
+# moderation call, no vision call, nothing that leaves the machine. /describe is where both live.
+
+def test_measure_makes_no_openai_calls(client, monkeypatch, real_jpeg):
+    """The whole point of the split. If moderation or the model creep back in here, the marker is
+    behind a network round trip again and the user is holding their arm up for it."""
+    calls = []
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: calls.append("moderate") or True)
+    monkeypatch.setattr(scene_analysis, "_analyze_with_gpt", lambda *a, **k: calls.append("vision") or {})
+    response = client.post("/measure", files=upload(content=real_jpeg))
+    assert response.status_code == 200, response.json()
+    assert calls == [], f"/measure called OpenAI: {calls}"
+
+
+def test_measure_returns_the_marker_and_the_gates(client, real_jpeg):
+    body = client.post("/measure", files=upload(content=real_jpeg)).json()
+    assert set(body) == {
+        "blueprint", "lighting", "blurry", "blur_var", "edge_sharpness",
+        "composition", "placement", "camera_tilt",
+    }
+    assert body["placement"]["x"] in (0.333, 0.667)
+
+
+def test_describe_moderates_before_the_model(client, monkeypatch, real_jpeg):
+    """Moderation follows the image, and /describe is the only route that sends it anywhere."""
+    order = []
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: order.append("moderate") or True)
+    monkeypatch.setattr(scene_analysis, "_analyze_with_gpt", lambda *a, **k: order.append("vision") or {})
+    client.post("/describe", files=upload(content=real_jpeg), data={"side": "right"})
+    assert order == ["moderate", "vision"]
+
+
+def test_describe_refuses_a_flagged_image_without_calling_the_model(client, monkeypatch, real_jpeg):
+    called = []
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: False)
+    monkeypatch.setattr(scene_analysis, "_analyze_with_gpt", lambda *a, **k: called.append(1) or {})
+    response = client.post("/describe", files=upload(content=real_jpeg))
+    assert response.status_code == 400
+    assert called == [], "a flagged image still reached the vision model"
+
+
+@pytest.mark.parametrize("side, expected_x", [("left", 0.333), ("right", 0.667)])
+def test_describe_passes_the_side_through_to_the_prompt(client, monkeypatch, real_jpeg, side, expected_x):
+    """The model is told which side the geometry picked so its sentence cannot contradict the
+    marker. In one call that was free; split apart, the client has to hand it back."""
+    seen = {}
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: True)
+    monkeypatch.setattr(
+        scene_analysis, "_analyze_with_gpt",
+        lambda b64, placement=None, lang="en": seen.update(placement or {}) or {},
+    )
+    client.post("/describe", files=upload(content=real_jpeg), data={"side": side})
+    assert seen.get("x") == expected_x
+
+
+def test_an_unknown_side_is_ignored_rather_than_guessed(client, monkeypatch, real_jpeg):
+    """A wrong side is worse than none: the prompt has its own default, and a contradicted marker
+    reads as the app being confused."""
+    seen = []
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: True)
+    monkeypatch.setattr(
+        scene_analysis, "_analyze_with_gpt",
+        lambda b64, placement=None, lang="en": seen.append(placement) or {},
+    )
+    client.post("/describe", files=upload(content=real_jpeg), data={"side": "sideways"})
+    assert seen == [None]
+
+
+def test_the_two_halves_cover_exactly_what_analyze_returns(client, monkeypatch, real_jpeg):
+    """Nothing gained, nothing dropped. A field that exists in neither half would silently vanish
+    for the split client while still working for the old one."""
+    monkeypatch.setattr(scene_analysis, "_moderate_image", lambda b64: True)
+    monkeypatch.setattr(
+        scene_analysis, "_analyze_with_gpt",
+        lambda *a, **k: {"scene_type": "Cafe", "filter": "Vivid", "hashtags": ["#a"],
+                         "placement_hint": "Stand by the wall"},
+    )
+    whole = set(client.post("/analyze", files=upload(content=real_jpeg)).json())
+    measured = set(client.post("/measure", files=upload(content=real_jpeg)).json())
+    described = set(client.post("/describe", files=upload(content=real_jpeg)).json())
+    assert measured | described == whole, (
+        f"missing from the split: {whole - (measured | described)}; "
+        f"invented by it: {(measured | described) - whole}"
+    )
+    assert not (measured & described), f"both halves claim {measured & described}"
 
 
 # ── content type ──

@@ -480,19 +480,9 @@ class InappropriateImageError(ValueError):
     pass
 
 
-def analyze_scene(image_path: str, lang: str = DEFAULT_LANGUAGE) -> dict:
-    b64 = _encode_image(image_path)
-    if not _moderate_image(b64):
-        raise InappropriateImageError("Image flagged as inappropriate")
-    features = extract_features(image_path)
-    gpt = _analyze_with_gpt(b64, features["placement"], lang)
-
-    filter_name = gpt.get("filter", "Vivid")
-    if filter_name not in VALID_FILTERS:
-        filter_name = "Vivid"
-
+def _measured(features: dict) -> dict:
+    """The half computed from pixels. No network, no key, ~30ms."""
     return {
-        "scene_type":   gpt.get("scene_type", "Unknown"),
         "blueprint":    build_blueprint(features),
         "lighting":     assess_lighting(features),
         "blurry":       features["blurry"],
@@ -501,7 +491,54 @@ def analyze_scene(image_path: str, lang: str = DEFAULT_LANGUAGE) -> dict:
         "composition":  assess_composition(features),
         "placement":    features["placement"],
         "camera_tilt":  features["camera_tilt"],
+    }
+
+
+def _described(gpt: dict) -> dict:
+    """The half the vision model supplies. Every field has a safe default."""
+    filter_name = gpt.get("filter", "Vivid")
+    if filter_name not in VALID_FILTERS:
+        filter_name = "Vivid"
+    return {
+        "scene_type":   gpt.get("scene_type", "Unknown"),
         "placement_hint": _clean_hint(gpt.get("placement_hint")),
         "hashtags":     _clean_hashtags(gpt.get("hashtags")),
         "filter":       filter_name,
     }
+
+
+def measure_scene(image_path: str) -> dict:
+    """The marker, the gates and the framing. Pixels only, so it returns in well under a second.
+
+    No moderation: nothing here leaves the machine. The image is not sent anywhere, and the caller
+    gets back numbers derived from it rather than anything generated about it.
+    """
+    return _measured(extract_features(image_path))
+
+
+def describe_scene(image_path: str, lang: str = DEFAULT_LANGUAGE,
+                   placement: dict | None = None) -> dict:
+    """The scene name, filter, hashtags and depth sentence. One moderation call, one vision call.
+
+    Moderation stays here because this is the path that sends the image to a third party.
+    `placement` is what measure_scene already worked out, passed back so the model's sentence
+    agrees with the side the geometry picked.
+    """
+    b64 = _encode_image(image_path)
+    if not _moderate_image(b64):
+        raise InappropriateImageError("Image flagged as inappropriate")
+    return _described(_analyze_with_gpt(b64, placement, lang))
+
+
+def analyze_scene(image_path: str, lang: str = DEFAULT_LANGUAGE) -> dict:
+    """Both halves in one call, unchanged.
+
+    Kept because a cached copy of the old page is still pointed at it. The ordering is deliberate
+    and preserved: moderation first, so a flagged image does not pay for feature extraction either.
+    """
+    b64 = _encode_image(image_path)
+    if not _moderate_image(b64):
+        raise InappropriateImageError("Image flagged as inappropriate")
+    features = extract_features(image_path)
+    gpt = _analyze_with_gpt(b64, features["placement"], lang)
+    return {**_described(gpt), **_measured(features)}

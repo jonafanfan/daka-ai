@@ -1203,33 +1203,72 @@
     }
 
     /* ── Backend ── */
-    async function postAnalyze(blob) {
+    async function postScan(path, blob, fields) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 60000);
       try {
-        const fd = new FormData(); fd.append('file', blob, 'photo.jpg'); fd.append('lang', lang);
-        const res = await fetch(API + '/analyze', { method: 'POST', body: fd, signal: controller.signal });
+        const fd = new FormData();
+        fd.append('file', blob, 'photo.jpg');
+        for (const [k, v] of Object.entries(fields || {})) fd.append(k, v);
+        const res = await fetch(API + path, { method: 'POST', body: fd, signal: controller.signal });
         let data; try { data = await res.json(); } catch (e) { throw new Error(tr('err.badResponse')); }
         if (!res.ok) throw new Error(data.error || data.message || data.detail || (tr('err.server') + ' (' + res.status + ')'));
-        if (data.error || !data.lighting) throw new Error(data.error || tr('err.badResponse'));
+        if (data.error) throw new Error(data.error);
         return data;
       } finally { clearTimeout(timer); }
     }
 
+    // The file picker has no coaching to get on with, so it still takes both halves at once.
+    async function postAnalyze(blob) {
+      const data = await postScan('/analyze', blob, { lang });
+      if (!data.lighting) throw new Error(tr('err.badResponse'));
+      return data;
+    }
+
     /* ── Stage 1: scan the scene ── */
+    // Rising count, so a response that arrives after the user has rescanned is thrown away rather
+    // than painted over the scene they are now pointing at.
+    let scanToken = 0;
+
+    // Two requests, not one. The marker comes out of /measure in well under a second; /describe
+    // takes a vision call, which measured between 3.7 and 11.1 seconds for the same image. Waiting
+    // on the second to show the first meant standing with your arm up for a scene name.
+    //
+    // Nothing needs a placeholder while the words are missing. The hint hides itself when empty,
+    // the hashtag card is not rendered without tags, and the filter already defaults to Vivid —
+    // all of it built for the model failing, which is the same state as the model being slow.
     async function scanScene() {
       const blob = await grabScanBlob();
       if (!blob) { toast(tr('toast.notReady')); return; }
+      const token = ++scanToken;
       setCamState('loading');
       try {
-        analysisResult = await postAnalyze(blob);
-        if (analysisResult.lighting && analysisResult.lighting.quality === 'Poor') { openGate(tr('gate.light')); return; }
-        if (analysisResult.blurry) { openGate(tr('gate.blur')); return; }
+        const measured = await postScan('/measure', blob);
+        if (token !== scanToken) return;
+        if (measured.lighting && measured.lighting.quality === 'Poor') { openGate(tr('gate.light')); return; }
+        if (measured.blurry) { openGate(tr('gate.blur')); return; }
+        analysisResult = measured;
         beginCoaching(analysisResult);
+        describeScene(blob, measured, token);
       } catch (e) {
         setCamState('idle');
         toast(errMsg(e));
       }
+    }
+
+    // Deliberately not awaited. A failure here costs the scene name and the hint; the marker and
+    // every cue are already on screen and keep working, which is the whole point of the split.
+    function describeScene(blob, measured, token) {
+      const x = (measured.placement && measured.placement.x != null) ? measured.placement.x : 0.667;
+      postScan('/describe', blob, { lang, side: x < 0.5 ? 'left' : 'right' })
+        .then(described => {
+          if (token !== scanToken || !analysisResult) return;
+          Object.assign(analysisResult, described);
+          renderTips(analysisResult);
+          // The hint arriving grows the controls bar, and the frame is centred above it.
+          resizeControls($('camControls').getBoundingClientRect().height);
+        })
+        .catch(() => { /* the scan is still usable without the words */ });
     }
 
     function beginCoaching(r) {
@@ -1271,7 +1310,7 @@
     }
 
     function renderTips(r) {
-      $('sceneBadgeTop').textContent = r.scene_type || tr('res.scene');
+      $('sceneBadgeTop').textContent = r.scene_type || '';
       // Depth is the thing a flat marker cannot show: it says WHERE across the frame but nothing
       // about how far into the scene to stand.
       $('placeHint').textContent = r.placement_hint || '';

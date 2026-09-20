@@ -23,7 +23,8 @@ left to the person being photographed.
 ```
 Home  ->  camera  ->  point at an empty scene, tap the shutter
                           |
-                     POST /analyze  (frame capped at 1024px, JPEG q0.7)
+         POST /measure  (frame capped at 1024px, JPEG q0.7)  ~0.3s
+         POST /describe  fired at the same time, answers later
                           |
           capture gate: reject if the light is Poor or the frame is blurry
                           |
@@ -43,7 +44,7 @@ Home  ->  camera  ->  point at an empty scene, tap the shutter
 | Piece | File | Notes |
 |---|---|---|
 | Frontend (all of it) | [`web/index.html`](web/index.html) | HTML, CSS and JS inline. No build step. |
-| API | [`api_server.py`](api_server.py) | FastAPI. Two routes: `/health` and `POST /analyze`. |
+| API | [`api_server.py`](api_server.py) | FastAPI. `/health`, and `/measure`, `/describe`, `/analyze`. |
 | Engine | [`scene_analysis.py`](scene_analysis.py) | OpenCV measurements plus one vision-model call. |
 | Response contract | [`CONTRACT.md`](CONTRACT.md) | Read before changing the response shape. |
 | iOS shell | [`capacitor.config.json`](capacitor.config.json), [`ios/`](ios) | Capacitor 8. Adds the camera roll and the tip jar. |
@@ -59,6 +60,13 @@ sentence that refines the marker. Four fields, and the positioning does not depe
 So a failed vision call still returns a usable scan, with `scene_type: "Unknown"`. One consequence
 for anyone reading the response: **a `200` is not proof the model ran.** See
 [`CONTRACT.md`](CONTRACT.md) §3.6.
+
+The two halves are also two routes. `/measure` is pixels only and answers in well under a second;
+`/describe` carries both OpenAI calls and took between 3.7 and 11.1 seconds for the same image. The
+client fires them together and draws the marker on the first, so nobody stands with their arm up
+waiting for a scene name. Fields that have not arrived yet look exactly like fields the model
+failed to produce, which the app already handled: the hint hides when empty, the hashtag card is
+not rendered without tags, and the filter defaults to Vivid.
 
 `_compute_placement` is the core. It fuses visual balance (stand opposite the scene's focal mass),
 background cleanliness (prefer the emptier side) and light direction (stand on the dimmer side, so
