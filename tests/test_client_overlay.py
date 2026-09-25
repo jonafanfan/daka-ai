@@ -263,6 +263,7 @@ def test_only_transient_huds_overlay_the_image():
         "video", "liveOverlay", "gridOverlay",          # the image and what is drawn on it
         "coachCue", "coachText", "statusChip",          # transient text
         "sceneBadgeTop",                                # small label
+        "focusRing",                                    # the tap-to-focus reticle, 900ms
         "camLevel", "camLevelRef", "camLevelLine",      # the horizon level
     }
     found = set(re.findall(r'id="([\w-]+)"', viewfinder))

@@ -1442,3 +1442,135 @@ def test_a_scan_and_a_retake_produce_the_same_coaching_state():
       console.log(JSON.stringify({ afterScan, afterRetake }));
     """)
     assert out["afterScan"] == out["afterRetake"]
+
+
+# ── Tap to focus ──────────────────────────────────────────────────────────────
+# The stub frame is 390x520 at top 80; the track is 1080x1920. object-fit: cover scales by
+# 390/1080, so 693px of video height is squeezed into a 520px window and 86.7px is hidden top and
+# bottom. Those numbers are why the naive "fraction of the element" answer is wrong.
+FOCUS = """
+  const applied = [];
+  navigator.mediaDevices.getSupportedConstraints = () => ({ pointsOfInterest: true });
+  const track = (modes, fail) => ({
+    readyState: 'live',
+    getCapabilities: () => ({ focusMode: modes }),
+    applyConstraints: (c) => { applied.push(c); return fail ? Promise.reject(new Error('no')) : Promise.resolve(); },
+  });
+  const useTrack = (t) => { stream = { getVideoTracks: () => [t] }; };
+  useTrack(track(['continuous', 'single-shot', 'manual']));
+  const tap = (x, y) => tapToFocus({ clientX: x, clientY: y });
+  const poi = () => applied.map(c => c.advanced[0].pointsOfInterest[0]);
+  const ring = () => toggles.filter(t => t.id === 'focusRing');
+"""
+
+
+def test_a_tap_in_the_middle_focuses_the_middle():
+    out = run(FOCUS + """
+      await tap(195, 340);
+      console.log(JSON.stringify({ poi: poi() }));
+    """)
+    assert out["poi"] == [{"x": 0.5, "y": 0.5}], out["poi"]
+
+
+def test_a_tap_at_the_top_of_the_frame_allows_for_the_hidden_crop():
+    """The viewfinder shows the middle of a taller video. Hand the camera the raw fraction of the
+    element and the top of the frame reads as the top of the sensor, which is off screen."""
+    out = run(FOCUS + """
+      await tap(195, 80);
+      console.log(JSON.stringify({ poi: poi() }));
+    """)
+    y = out["poi"][0]["y"]
+    assert y != 0, "the crop was ignored — this is the top of the sensor, not the top of the frame"
+    assert round(y, 3) == 0.125, y
+
+
+def test_a_tap_on_the_left_edge_focuses_the_left_edge():
+    """Nothing is cropped horizontally at this size, so this one is the plain fraction."""
+    out = run(FOCUS + """
+      await tap(0, 340);
+      console.log(JSON.stringify({ poi: poi() }));
+    """)
+    assert out["poi"] == [{"x": 0, "y": 0.5}], out["poi"]
+
+
+def test_single_shot_is_preferred():
+    """A tap means focus here and stay there, which is what single-shot does."""
+    out = run(FOCUS + """
+      await tap(195, 340);
+      console.log(JSON.stringify({ mode: applied[0].advanced[0].focusMode }));
+    """)
+    assert out["mode"] == "single-shot"
+
+
+def test_a_camera_offering_only_continuous_focus_still_gets_the_point():
+    out = run(FOCUS + """
+      useTrack(track(['continuous']));
+      await tap(195, 340);
+      console.log(JSON.stringify({ mode: applied[0].advanced[0].focusMode, poi: poi() }));
+    """)
+    assert out["mode"] == "continuous"
+    assert out["poi"] == [{"x": 0.5, "y": 0.5}]
+
+
+def test_a_browser_without_points_of_interest_does_nothing_at_all():
+    """WebKit is the case that matters. No constraint, and no reticle either: an animation over a
+    lens that never moved is the Save button lying again."""
+    out = run(FOCUS + """
+      navigator.mediaDevices.getSupportedConstraints = () => ({});
+      await tap(195, 340);
+      console.log(JSON.stringify({ applied: applied.length, ring: ring() }));
+    """)
+    assert out["applied"] == 0
+    assert out["ring"] == []
+
+
+def test_a_camera_that_cannot_focus_is_left_alone():
+    out = run(FOCUS + """
+      useTrack(track([]));
+      await tap(195, 340);
+      console.log(JSON.stringify({ applied: applied.length, ring: ring() }));
+    """)
+    assert out["applied"] == 0
+    assert out["ring"] == []
+
+
+def test_a_tap_before_the_camera_starts_does_not_throw():
+    out = run(FOCUS + """
+      stream = null;
+      await tap(195, 340);
+      console.log(JSON.stringify({ applied: applied.length }));
+    """)
+    assert out["applied"] == 0
+
+
+def test_the_reticle_lands_on_the_tap():
+    out = run(FOCUS + """
+      await tap(120, 300);
+      const at = p => (styles.filter(s => s.id === 'focusRing' && s.prop === p).pop() || {}).val;
+      console.log(JSON.stringify({ left: at('left'), top: at('top') }));
+    """)
+    assert out["left"] == "120px"
+    # The vertical one is the real assertion. The frame is full width at x=0, so a screen x and a
+    # frame x are the same number here and "left" cannot tell them apart; the frame starts 80px
+    # down, so "top" can.
+    assert out["top"] == "220px", "the reticle is positioned on the screen, not inside the frame"
+
+
+def test_the_reticle_stays_hidden_when_the_camera_refuses():
+    out = run(FOCUS + """
+      useTrack(track(['single-shot'], true));
+      await tap(195, 340);
+      console.log(JSON.stringify({ ring: ring() }));
+    """)
+    assert out["ring"] == [], "drew a focus reticle for a focus that did not happen"
+
+
+def test_a_second_tap_restarts_the_reticle():
+    """Re-adding a class that is already there never replays the animation, so a second tap in the
+    same spot would silently do nothing visible."""
+    out = run(FOCUS + """
+      await tap(195, 340);
+      await tap(195, 340);
+      console.log(JSON.stringify({ ring: ring().map(t => t.val) }));
+    """)
+    assert out["ring"] == [False, True, False, True], out["ring"]
