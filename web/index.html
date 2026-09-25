@@ -238,6 +238,22 @@
 
     /* Crop marks on the frame corners: the clearest way to say the sharp rectangle is the shot
        and the blur around it is not. */
+    /* Square, not round: a rectangle reads as a focus area, a circle reads as a tap ripple. */
+    #focusRing {
+      position: absolute; width: 72px; height: 72px; margin: -36px 0 0 -36px;
+      border: 1px solid rgba(255,255,255,0.95); border-radius: 3px;
+      box-shadow: 0 0 6px rgba(0,0,0,0.5), inset 0 0 6px rgba(0,0,0,0.3);
+      pointer-events: none; z-index: 26; opacity: 0;
+    }
+    #focusRing.show { animation: focusPulse 900ms ease-out forwards; }
+    @keyframes focusPulse {
+      0%   { opacity: 0; transform: scale(1.4); }
+      25%  { opacity: 1; transform: scale(1); }
+      70%  { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) { #focusRing.show { animation: none; } }
+
     .frame-ticks { position: absolute; inset: 0; pointer-events: none; z-index: 24; }
     .frame-ticks i { position: absolute; width: 22px; height: 22px; border: 0 solid rgba(255,255,255,0.9); }
     .frame-ticks i:nth-child(1) { top: 10px; left: 10px; border-top-width: 2px; border-left-width: 2px; }
@@ -439,6 +455,7 @@
     <div class="cam-frame" id="camFrame">
       <video id="video" autoplay playsinline muted></video>
       <div class="frame-ticks" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div id="focusRing" aria-hidden="true"></div>
       <canvas id="liveOverlay"></canvas>
       <div id="coachCue" class="coach-cue">
         <span id="coachText" data-i18n="cue.stand">Have them stand on the marker</span>
@@ -1003,6 +1020,62 @@
     /* ── Live scene guards (blur / blocked) ── */
     let liveActive = false, liveRAF = null, lastCheck = 0;
     const _fs = document.createElement('canvas'); _fs.width = 64; _fs.height = 64;
+
+    /* ── Tap to focus ── */
+    // The camera wants the point in track coordinates, not screen ones. The video is
+    // object-fit: cover, a 4:3 track inside a 3:4 frame, so a fifth of its width is off screen on
+    // each side. Hand it the raw fraction of the element and it focuses somewhere you cannot see.
+    function focusPoint(el, video, clientX, clientY) {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height || !video.videoWidth) return null;
+      const scale = Math.max(box.width / video.videoWidth, box.height / video.videoHeight);
+      const shownW = video.videoWidth * scale, shownH = video.videoHeight * scale;
+      const localX = clientX - box.left, localY = clientY - box.top;
+      return {
+        x: (localX + (shownW - box.width) / 2) / shownW,
+        y: (localY + (shownH - box.height) / 2) / shownH,
+        localX, localY
+      };
+    }
+
+    // pointsOfInterest is an image-capture extension Chromium ships and WebKit does not, so on an
+    // iPhone this is false and the tap does nothing at all. No reticle either: an animation over a
+    // lens that never moved is a control pretending to work.
+    function focusModes(track) {
+      const supported = navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints
+        ? navigator.mediaDevices.getSupportedConstraints() : {};
+      if (!supported.pointsOfInterest || !track || !track.getCapabilities) return null;
+      let modes;
+      try { modes = track.getCapabilities().focusMode; } catch (e) { return null; }
+      return (modes && modes.length) ? modes : null;
+    }
+
+    async function tapToFocus(event) {
+      const track = stream && stream.getVideoTracks()[0];
+      const modes = focusModes(track);
+      if (!modes) return;
+      const point = focusPoint($('camFrame'), $('video'), event.clientX, event.clientY);
+      if (!point) return;
+
+      // single-shot focuses once and holds, which is what a tap means. Where only continuous is
+      // offered the point still steers it, so take whichever the camera actually has.
+      const mode = modes.includes('single-shot') ? 'single-shot'
+        : modes.includes('continuous') ? 'continuous' : modes[0];
+      try {
+        await track.applyConstraints({
+          advanced: [{ focusMode: mode, pointsOfInterest: [{ x: point.x, y: point.y }] }]
+        });
+      } catch (e) { return; }   // rejected: nothing focused, so nothing to draw
+
+      const ring = $('focusRing');
+      ring.style.left = point.localX + 'px';
+      ring.style.top = point.localY + 'px';
+      ring.classList.remove('show');
+      void ring.offsetWidth;    // restart the animation when the same spot is tapped twice
+      ring.classList.add('show');
+    }
+
+    $('camFrame').addEventListener('click', tapToFocus);
 
     /* ── Coaching helpers ── */
     function setCue(text) {
