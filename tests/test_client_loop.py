@@ -1550,7 +1550,10 @@ def test_the_reticle_lands_on_the_tap():
       console.log(JSON.stringify({ left: at('left'), top: at('top') }));
     """)
     assert out["left"] == "120px"
-    assert out["top"] == "220px", "the reticle is positioned inside the frame, not on the screen"
+    # The vertical one is the real assertion. The frame is full width at x=0, so a screen x and a
+    # frame x are the same number here and "left" cannot tell them apart; the frame starts 80px
+    # down, so "top" can.
+    assert out["top"] == "220px", "the reticle is positioned on the screen, not inside the frame"
 
 
 def test_the_reticle_stays_hidden_when_the_camera_refuses():
