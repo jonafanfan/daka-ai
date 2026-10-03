@@ -23,7 +23,7 @@ left to the person being photographed.
 ```
 Home  ->  camera  ->  point at an empty scene, tap the shutter
                           |
-         POST /measure  (frame capped at 1024px, JPEG q0.7)  ~0.3s
+         POST /measure  (frame capped at 1024px, JPEG q0.7)  ~1s
          POST /describe  fired at the same time, answers later
                           |
           capture gate: reject if the light is Poor or the frame is blurry
@@ -61,7 +61,7 @@ So a failed vision call still returns a usable scan, with `scene_type: "Unknown"
 for anyone reading the response: **a `200` is not proof the model ran.** See
 [`CONTRACT.md`](CONTRACT.md) §3.6.
 
-The two halves are also two routes. `/measure` is pixels only and answers in well under a second;
+The two halves are also two routes. `/measure` is pixels only and answers in about a second;
 `/describe` carries both OpenAI calls and took between 3.7 and 11.1 seconds for the same image. The
 client fires them together and draws the marker on the first, so nobody stands with their arm up
 waiting for a scene name. Fields that have not arrived yet look exactly like fields the model
@@ -72,6 +72,24 @@ not rendered without tags, and the filter defaults to Vivid.
 background cleanliness (prefer the emptier side) and light direction (stand on the dimmer side, so
 the light falls on your face), each voting only when it is reliable for that scene. Over the top
 sits a backlight veto, so nobody is ever placed in front of a blown-out window.
+
+### Where that second goes
+
+Measured against the live deployment, posting a 768x1024 JPEG at q0.7, which is the size the client
+sends:
+
+| | |
+|---|---|
+| Round trip to Render for a route that does nothing (`/health`) | ~250ms |
+| `measure_scene` on a laptop | 16ms |
+| the same call on Render's free plan | ~700ms |
+
+The free plan is **0.1 CPU**, a tenth of a core. So almost the whole wait is 16ms of work being
+executed slowly, and neither the network nor the algorithm is the thing to optimise. A plan with
+0.5 CPU is the only change that shortens it.
+
+Two costs on top of that: the first request of a session adds roughly 370ms (measured 1.34s, then
+0.97s and 0.98s), and a request that has to wake a sleeping service takes about 50 seconds.
 
 ### The tip jar
 
@@ -147,7 +165,7 @@ show the UI without scanning.
 ruff check .
 ```
 
-**404 tests, under 10 seconds.** No API key and no network: the OpenAI client is faked, and
+**429 tests, under 10 seconds.** No API key and no network: the OpenAI client is faked, and
 constructing a real one is a test failure.
 
 The four `test_client_*` files run the page's own JavaScript in node against a stubbed DOM. They
@@ -157,11 +175,11 @@ and both were out-of-scope identifiers that only failed when the code actually r
 | File | Tests | Covers |
 |---|---|---|
 | [`test_openai_paths.py`](tests/test_openai_paths.py) | 89 | Moderation, every degradation path, request shapes, the `lang` prompt |
-| [`test_client_loop.py`](tests/test_client_loop.py) | 79 | The render loop, marker, cue ladder, camera lifecycle, horizon maths, tip jar |
+| [`test_client_loop.py`](tests/test_client_loop.py) | 96 | The render loop, marker, cue ladder, camera lifecycle, horizon maths, tap to focus, tip jar |
 | [`test_guidance.py`](tests/test_guidance.py) | 42 | Placement reason, dead-space tilt, depth hint, client/engine filter agreement |
 | [`test_assessments.py`](tests/test_assessments.py) | 40 | Lighting, composition, blueprint, at their thresholds |
 | [`test_client_overlay.py`](tests/test_client_overlay.py) | 32 | Marker drawing, `visibleCrop`, camera-region layout |
-| [`test_api.py`](tests/test_api.py) | 31 | Size cap, rate limit, error mapping, CORS, `lang` |
+| [`test_api.py`](tests/test_api.py) | 39 | Size cap, rate limit, error mapping, CORS, `lang` |
 | [`test_client_i18n.py`](tests/test_client_i18n.py) | 26 | The language switch, both string tables, every key asked for |
 | [`test_placement.py`](tests/test_placement.py) | 23 | Every directional claim in `_compute_placement`, including the veto |
 | [`test_filters.py`](tests/test_filters.py) | 16 | Baked filters match the CSS preview exactly |
@@ -199,8 +217,14 @@ Set in the Render dashboard:
 | `OPENAI_API_KEY` | yes | none | Never committed (`sync: false` in `render.yaml`). |
 | `ALLOWED_ORIGINS` | no | `https://dakaba.pages.dev`, plus the two Capacitor origins | Comma-separated. Replaces the default rather than adding to it. |
 
-The backend is on Render's free plan, so it sleeps when idle and the first request after that takes
-about 50 seconds. A cron job pings `/health` every 10 minutes to keep it warm.
+The backend is on Render's free plan, so it sleeps after 15 minutes idle and the first request
+after that takes about 50 seconds. A cron job pings `/health` every 5 minutes to keep it warm, which
+leaves room for two missed pings. At 10 minutes, two in a row put a visitor in front of the 50
+second wait.
+
+Free instance hours are **750 a month across the whole workspace**, and keeping one service awake
+around the clock for a 31 day month costs 744 of them. It fits, but only just, and only while this
+is the only free service in the workspace.
 
 Dependencies are pinned exactly in `requirements.txt`. To upgrade something, bump one line and run
 the tests.
@@ -226,6 +250,10 @@ beats refusing every scan during an outage, but it is a bypass, and it is logged
 [`docs/gotchas.md`](docs/gotchas.md) covers the device behaviour we had to find the hard way: why
 the filters use an SVG colour matrix, why detection runs on a 480px copy, why the compass drift
 warning was deleted.
+
+**Tap to focus does nothing on iOS.** `pointsOfInterest` is an image-capture extension Chromium
+ships and WebKit does not, so the capability check fails and the tap is ignored, reticle included. It
+works in Chrome. Deliberately silent rather than cosmetic: see [`docs/gotchas.md`](docs/gotchas.md).
 
 **No "you have moved since scanning" warning.** The compass cannot measure it in the pose you hold a
 phone to take a photo. Doing it properly needs the gyroscope integrated over the few seconds between
