@@ -8,6 +8,7 @@ here", "out of the window glare". Then it talks you through the shot, picks a fi
 
 <img width="946" height="1609" alt="Example image" src="https://github.com/user-attachments/assets/4dd685ac-6214-4904-a14f-4633ebb25676" />
 
+
 | | |
 |---|---|
 | Try it | <https://dakaba.pages.dev> |
