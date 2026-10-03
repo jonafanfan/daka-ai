@@ -115,6 +115,21 @@ see and drew the marker off screen.
 
 ---
 
+## `pointsOfInterest` is a Chromium extension, not a web standard
+
+Tap to focus sets `focusMode` and `pointsOfInterest` through `applyConstraints`. Chromium implements
+both. WebKit does not offer them, so on an iPhone, which is the platform this app ships on, the
+constraint is absent and the tap does nothing.
+
+The check is `navigator.mediaDevices.getSupportedConstraints()`, **not** `track.getCapabilities()`.
+The spec lists `pointsOfInterest` under settings and constraints but not under capabilities, so
+reading it off the capabilities would be false everywhere, including on the browsers where it works.
+
+Where it is absent the tap draws no reticle either. A reticle animating over a lens that never moved
+is the same lie as the Save button that said "Saved" without saving.
+
+---
+
 ## A pose model is trained to find a person, not to decide whether one is there
 
 Shown an empty room it will still offer its best guess, and the marker turned green with nobody in
