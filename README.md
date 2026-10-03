@@ -6,7 +6,7 @@ Point your phone at a scene and tap once. The app works out the best spot for a 
 draws a marker there, and explains its choice: "light falls on your face", "cleaner background
 here", "out of the window glare". Then it talks you through the shot, picks a filter, and tags it.
 
-<img width="1169" height="1986" alt="Example image" src="https://github.com/user-attachments/assets/142abfee-44a2-4ae1-9b50-6c0767405d30" />
+<img width="946" height="1609" alt="Example image" src="https://github.com/user-attachments/assets/4dd685ac-6214-4904-a14f-4633ebb25676" />
 
 | | |
 |---|---|
